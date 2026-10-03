@@ -107,6 +107,80 @@ class Room {
 class RoomManager {
   constructor() {
     this.rooms = new Map();
+    this.roomsCollection = null;
+    this.pendingWrites = new Map();
+  }
+
+  async initialize(roomsCollection) {
+    this.roomsCollection = roomsCollection;
+    const documents = await roomsCollection.find({}).toArray();
+
+    for (const document of documents) {
+      const room = new Room(document.roomId, document.hostId);
+      room.videoId = document.videoId;
+      room.currentTime = document.currentTime;
+      room.playState = document.playState;
+      room.createdAt = document.createdAt;
+
+      for (const savedParticipant of document.participants || []) {
+        const participant = new Participant(
+          savedParticipant.userId,
+          savedParticipant.username,
+          null,
+          savedParticipant.role,
+        );
+        participant.connectedAt = savedParticipant.connectedAt;
+        room.addParticipant(participant);
+      }
+
+      if (room.participants.size > 0) {
+        this.rooms.set(room.roomId, room);
+      } else {
+        await roomsCollection.deleteOne({ roomId: room.roomId });
+      }
+    }
+  }
+
+  persistRoom(roomId) {
+    if (!this.roomsCollection) {
+      return Promise.resolve();
+    }
+
+    const previousWrite = this.pendingWrites.get(roomId) || Promise.resolve();
+    const nextWrite = previousWrite
+      .catch(() => {})
+      .then(async () => {
+        const room = this.getRoom(roomId);
+        if (!room) {
+          await this.roomsCollection.deleteOne({ roomId });
+          return;
+        }
+
+        const document = room.toJSON();
+        document.participants = document.participants.map((participant) => ({
+          userId: participant.userId,
+          username: participant.username,
+          role: participant.role,
+          connectedAt: participant.connectedAt,
+        }));
+        await this.roomsCollection.replaceOne({ roomId }, document, { upsert: true });
+      })
+      .catch((error) => {
+        console.error(`Failed to persist room ${roomId}:`, error);
+      });
+
+    this.pendingWrites.set(roomId, nextWrite);
+    nextWrite.then(() => {
+      if (this.pendingWrites.get(roomId) === nextWrite) {
+        this.pendingWrites.delete(roomId);
+      }
+    });
+
+    return nextWrite;
+  }
+
+  async flushPendingWrites() {
+    await Promise.all([...this.pendingWrites.values()]);
   }
 
   createUserId() {
@@ -133,6 +207,7 @@ class RoomManager {
     const room = new Room(roomId, hostId);
     room.addParticipant(host);
     this.rooms.set(roomId, room);
+    this.persistRoom(roomId);
 
     return {
       room,
@@ -153,6 +228,7 @@ class RoomManager {
     const userId = this.createUserId();
     const participant = new Participant(userId, username, socketId, ROLE_TYPES.PARTICIPANT);
     room.addParticipant(participant);
+    this.persistRoom(roomId);
     return participant;
   }
 
@@ -166,6 +242,7 @@ class RoomManager {
     if (room.participants.size === 0) {
       this.rooms.delete(roomId);
     }
+    this.persistRoom(roomId);
 
     return participant;
   }
@@ -204,10 +281,12 @@ class RoomManager {
       }
       participant.role = ROLE_TYPES.HOST;
       room.hostId = userId;
+      this.persistRoom(roomId);
       return participant;
     }
 
     participant.role = role;
+    this.persistRoom(roomId);
     return participant;
   }
 
@@ -220,6 +299,7 @@ class RoomManager {
     room.videoId = videoId;
     room.currentTime = 0;
     room.playState = 'PAUSED';
+    this.persistRoom(roomId);
     return room;
   }
 
@@ -237,6 +317,7 @@ class RoomManager {
       room.playState = playState;
     }
 
+    this.persistRoom(roomId);
     return room;
   }
 }

@@ -1,5 +1,6 @@
 const dns = require("dns");
 dns.setServers(["8.8.8.8", "1.1.1.1"]);
+
 const express = require('express');
 const http = require('http');
 const cors = require('cors');
@@ -8,6 +9,7 @@ require('dotenv').config();
 
 const { RoomManager, ROLE_TYPES } = require('./roomManager');
 const { canControlPlayback, canManageParticipants, isHost } = require('./permissions');
+const { connectToMongo, closeMongoConnection } = require('./database');
 
 const app = express();
 const server = http.createServer(app);
@@ -19,6 +21,7 @@ app.use(cors({ origin: clientUrl, credentials: true }));
 app.use(express.json());
 
 const roomManager = new RoomManager();
+let isShuttingDown = false;
 
 function emitRoomState(ioInstance, roomId) {
   const room = roomManager.getRoom(roomId);
@@ -33,13 +36,14 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', message: 'Watch Party backend is running.' });
 });
 
-app.post('/api/rooms', (req, res) => {
+app.post('/api/rooms', async (req, res) => {
   const username = String(req.body?.username || '').trim();
   if (!username || username.length < 2) {
     return res.status(400).json({ message: 'Username must be at least 2 characters long.' });
   }
 
   const { room, participant } = roomManager.createRoom({ username, socketId: null });
+  await roomManager.persistRoom(room.roomId);
 
   return res.status(201).json({
     roomId: room.roomId,
@@ -93,6 +97,7 @@ io.on('connection', (socket) => {
 
     if (participant.username !== cleanUsername && !userId) {
       participant.username = cleanUsername;
+      roomManager.persistRoom(cleanRoomId);
     }
 
     socket.join(cleanRoomId);
@@ -120,7 +125,7 @@ io.on('connection', (socket) => {
       return;
     }
 
-    room.playState = 'PLAYING';
+    roomManager.updatePlayback(room.roomId, { playState: 'PLAYING' });
     io.to(room.roomId).emit('sync_state', room.toJSON());
   });
 
@@ -137,7 +142,7 @@ io.on('connection', (socket) => {
       return;
     }
 
-    room.playState = 'PAUSED';
+    roomManager.updatePlayback(room.roomId, { playState: 'PAUSED' });
     io.to(room.roomId).emit('sync_state', room.toJSON());
   });
 
@@ -160,7 +165,7 @@ io.on('connection', (socket) => {
       return;
     }
 
-    room.currentTime = Math.max(0, seconds);
+    roomManager.updatePlayback(room.roomId, { currentTime: Math.max(0, seconds) });
     io.to(room.roomId).emit('sync_state', room.toJSON());
   });
 
@@ -309,6 +314,10 @@ io.on('connection', (socket) => {
   });
 
   socket.on('disconnect', () => {
+    if (isShuttingDown) {
+      return;
+    }
+
     const roomId = socket.data.roomId;
     const userId = socket.data.userId;
     if (!roomId || !userId) {
@@ -348,6 +357,30 @@ server.on('error', (error) => {
   process.exit(1);
 });
 
-server.listen(port, () => {
-  console.log(`Watch party server running on http://localhost:${port}`);
+async function startServer() {
+  const roomsCollection = await connectToMongo();
+  await roomManager.initialize(roomsCollection);
+  console.log(`Loaded ${roomManager.rooms.size} saved room(s).`);
+
+  server.listen(port, () => {
+    console.log(`Watch party server running on port ${port}`);
+  });
+}
+
+async function shutdown() {
+  isShuttingDown = true;
+  io.close(async () => {
+    await roomManager.flushPendingWrites();
+    await closeMongoConnection();
+    process.exit(0);
+  });
+}
+
+process.on('SIGINT', shutdown);
+process.on('SIGTERM', shutdown);
+
+startServer().catch(async (error) => {
+  console.error('Failed to connect to MongoDB or start the server:', error);
+  await closeMongoConnection();
+  process.exit(1);
 });
