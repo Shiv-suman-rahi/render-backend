@@ -151,7 +151,7 @@ class RoomManager {
     }
   }
 
-  persistRoom(roomId) {
+  persistRoom(roomId, { throwOnError = false } = {}) {
     if (!this.roomsCollection) {
       return Promise.resolve();
     }
@@ -177,14 +177,18 @@ class RoomManager {
       })
       .catch((error) => {
         console.error(`Failed to persist room ${roomId}:`, error);
+        if (throwOnError) {
+          throw error;
+        }
       });
 
     this.pendingWrites.set(roomId, nextWrite);
-    nextWrite.then(() => {
+    const clearPendingWrite = () => {
       if (this.pendingWrites.get(roomId) === nextWrite) {
         this.pendingWrites.delete(roomId);
       }
-    });
+    };
+    nextWrite.then(clearPendingWrite, clearPendingWrite);
 
     return nextWrite;
   }

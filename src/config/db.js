@@ -15,6 +15,7 @@ async function connectDB() {
 
   await mongoose.connect(uri, {
     serverSelectionTimeoutMS: 5000,
+    ...(process.env.MONGODB_DB ? { dbName: process.env.MONGODB_DB } : {}),
   });
 
   console.log(`Connected to MongoDB: ${mongoose.connection.name}`);

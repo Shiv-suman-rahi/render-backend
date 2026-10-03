@@ -10,6 +10,7 @@ require('dotenv').config();
 const { RoomManager, ROLE_TYPES } = require('./roomManager');
 const { canControlPlayback, canManageParticipants, isHost } = require('./permissions');
 const { connectToMongo, closeMongoConnection } = require('./database');
+const User = require('./models/User');
 
 const app = express();
 const server = http.createServer(app);
@@ -43,13 +44,23 @@ app.post('/api/rooms', async (req, res) => {
   }
 
   const { room, participant } = roomManager.createRoom({ username, socketId: null });
-  await roomManager.persistRoom(room.roomId);
+  try {
+    await User.findOneAndUpdate(
+      { userId: participant.userId },
+      { $set: { username, lastSeen: new Date() } },
+      { upsert: true, new: true, runValidators: true, setDefaultsOnInsert: true },
+    );
+    await roomManager.persistRoom(room.roomId, { throwOnError: true });
 
-  return res.status(201).json({
-    roomId: room.roomId,
-    userId: participant.userId,
-    room: room.toJSON(),
-  });
+    return res.status(201).json({
+      roomId: room.roomId,
+      userId: participant.userId,
+      room: room.toJSON(),
+    });
+  } catch (error) {
+    console.error('Failed to save newly created room:', error);
+    return res.status(500).json({ message: 'The room could not be saved. Please try again.' });
+  }
 });
 
 const io = new Server(server, {
@@ -61,7 +72,7 @@ const io = new Server(server, {
 });
 
 io.on('connection', (socket) => {
-  socket.on('join_room', ({ roomId, username, userId }) => {
+  socket.on('join_room', async ({ roomId, username, userId }) => {
     const cleanRoomId = String(roomId || '').trim().toUpperCase();
     const cleanUsername = String(username || '').trim();
 
@@ -95,9 +106,21 @@ io.on('connection', (socket) => {
       participant = room.getParticipantBySocketId(socket.id) || roomManager.addParticipant(cleanRoomId, cleanUsername, socket.id);
     }
 
-    if (participant.username !== cleanUsername && !userId) {
+    if (participant.username !== cleanUsername) {
       participant.username = cleanUsername;
-      roomManager.persistRoom(cleanRoomId);
+    }
+
+    try {
+      await User.findOneAndUpdate(
+        { userId: participant.userId },
+        { $set: { username: cleanUsername, lastSeen: new Date() } },
+        { upsert: true, new: true, runValidators: true, setDefaultsOnInsert: true },
+      );
+      await roomManager.persistRoom(cleanRoomId, { throwOnError: true });
+    } catch (error) {
+      console.error(`Failed to save participant joining room ${cleanRoomId}:`, error);
+      socket.emit('error', { message: 'Could not save your room session. Please try again.' });
+      return;
     }
 
     socket.join(cleanRoomId);
