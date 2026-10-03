@@ -15,10 +15,24 @@ const User = require('./models/User');
 const app = express();
 const server = http.createServer(app);
 
-const clientUrl = process.env.CLIENT_URL || 'http://localhost:5173';
+const clientUrls = (process.env.CLIENT_URL || 'https://vercel-frontend-beta-nine.vercel.app')
+  .split(',')
+  .map((url) => url.trim())
+  .filter(Boolean);
 const port = Number(process.env.PORT || 3000);
 
-app.use(cors({ origin: clientUrl, credentials: true }));
+const corsOptions = {
+  origin: (origin, callback) => {
+    if (!origin || clientUrls.includes(origin)) {
+      callback(null, true);
+      return;
+    }
+    callback(new Error('Origin is not allowed by CORS.'));
+  },
+  credentials: true,
+};
+
+app.use(cors(corsOptions));
 app.use(express.json());
 
 const roomManager = new RoomManager();
@@ -64,11 +78,7 @@ app.post('/api/rooms', async (req, res) => {
 });
 
 const io = new Server(server, {
-  cors: {
-    origin: clientUrl,
-    methods: ['GET', 'POST'],
-    credentials: true,
-  },
+  cors: { ...corsOptions, methods: ['GET', 'POST'] },
 });
 
 io.on('connection', (socket) => {
