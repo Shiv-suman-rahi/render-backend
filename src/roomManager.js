@@ -1,17 +1,25 @@
 const crypto = require('crypto');
 
 const ROLE_TYPES = Object.freeze({
-  HOST: 'HOST',
-  MODERATOR: 'MODERATOR',
-  PARTICIPANT: 'PARTICIPANT',
+  HOST: 'host',
+  MODERATOR: 'moderator',
+  PARTICIPANT: 'participant',
 });
+
+function normalizeRole(role) {
+  const nextRole = String(role || '').trim().toLowerCase();
+  if (nextRole === ROLE_TYPES.HOST || nextRole === ROLE_TYPES.MODERATOR || nextRole === ROLE_TYPES.PARTICIPANT) {
+    return nextRole;
+  }
+  return ROLE_TYPES.PARTICIPANT;
+}
 
 class Participant {
   constructor(userId, username, socketId, role = ROLE_TYPES.PARTICIPANT) {
     this.userId = userId;
     this.username = username;
     this.socketId = socketId;
-    this.role = role;
+    this.role = normalizeRole(role);
     this.connectedAt = new Date().toISOString();
   }
 
@@ -22,6 +30,7 @@ class Participant {
       role: this.role,
       socketId: this.socketId,
       connectedAt: this.connectedAt,
+      online: Boolean(this.socketId),
     };
   }
 }
@@ -83,11 +92,12 @@ class Room {
       return null;
     }
 
-    participant.role = role;
-    if (role === ROLE_TYPES.HOST) {
-      this.hostId = userId;
+    const nextRole = normalizeRole(role);
+    if (nextRole === ROLE_TYPES.HOST) {
+      return null;
     }
 
+    participant.role = nextRole;
     return participant;
   }
 
@@ -196,13 +206,13 @@ class RoomManager {
     return code;
   }
 
-  createRoom({ username, socketId }) {
+  createRoom({ username, socketId, userId }) {
     let roomId = this.generateRoomCode();
     while (this.rooms.has(roomId)) {
       roomId = this.generateRoomCode();
     }
 
-    const hostId = this.createUserId();
+    const hostId = userId || this.createUserId();
     const host = new Participant(hostId, username, socketId, ROLE_TYPES.HOST);
     const room = new Room(roomId, hostId);
     room.addParticipant(host);
@@ -247,12 +257,34 @@ class RoomManager {
     return participant;
   }
 
+  async closeRoom(roomId) {
+    const room = this.getRoom(roomId);
+    if (!room) {
+      return null;
+    }
+
+    this.rooms.delete(roomId);
+    await this.persistRoom(roomId);
+    return room;
+  }
+
   getParticipant(roomId, userId) {
     const room = this.getRoom(roomId);
     if (!room) {
       return null;
     }
     return room.getParticipant(userId);
+  }
+
+  markParticipantOffline(roomId, userId, socketId) {
+    const participant = this.getParticipant(roomId, userId);
+    if (!participant || participant.socketId !== socketId) {
+      return null;
+    }
+
+    participant.socketId = null;
+    this.persistRoom(roomId);
+    return participant;
   }
 
   getParticipantBySocketId(roomId, socketId) {

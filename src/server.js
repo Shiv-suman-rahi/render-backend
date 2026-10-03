@@ -282,6 +282,40 @@ io.on('connection', (socket) => {
     }
   });
 
+  socket.on('close_room', async ({ roomId }) => {
+    const cleanRoomId = String(roomId || '').trim().toUpperCase();
+    const room = roomManager.getRoom(cleanRoomId);
+    if (!room) {
+      socket.emit('error', { message: 'Room not found.' });
+      return;
+    }
+
+    const caller = roomManager.getParticipant(cleanRoomId, socket.data.userId);
+    if (
+      socket.data.roomId !== cleanRoomId
+      || !caller
+      || caller.socketId !== socket.id
+      || room.hostId !== caller.userId
+      || !canManageParticipants(caller)
+    ) {
+      socket.emit('error', { message: 'Only the current host can close this room.' });
+      return;
+    }
+
+    const closedRoom = await roomManager.closeRoom(cleanRoomId);
+    if (!closedRoom) {
+      socket.emit('error', { message: 'Unable to close this room.' });
+      return;
+    }
+
+    io.to(cleanRoomId).emit('room_closed', {
+      roomId: cleanRoomId,
+      hostId: closedRoom.hostId,
+      message: 'The host closed this watch party.',
+    });
+    io.in(cleanRoomId).socketsLeave(cleanRoomId);
+  });
+
   socket.on('leave_room', ({ roomId }) => {
     const room = roomManager.getRoom(String(roomId || '').trim().toUpperCase());
     if (!room) {
@@ -329,21 +363,18 @@ io.on('connection', (socket) => {
       return;
     }
 
-    const participant = roomManager.getParticipant(roomId, userId);
+    const participant = roomManager.markParticipantOffline(roomId, userId, socket.id);
     if (!participant) {
       return;
     }
 
-    roomManager.removeParticipant(roomId, userId);
-    socket.to(roomId).emit('user_left', {
+    socket.to(roomId).emit('user_offline', {
       userId: participant.userId,
       roomId,
       username: participant.username,
     });
 
-    if (roomManager.getRoom(roomId)) {
-      io.to(roomId).emit('sync_state', roomManager.getRoom(roomId).toJSON());
-    }
+    io.to(roomId).emit('sync_state', roomManager.getRoom(roomId).toJSON());
   });
 });
 
