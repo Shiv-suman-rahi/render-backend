@@ -119,6 +119,7 @@ class RoomManager {
     this.rooms = new Map();
     this.roomsCollection = null;
     this.pendingWrites = new Map();
+    this.playbackProgressPersistedAt = new Map();
   }
 
   async initialize(roomsCollection) {
@@ -255,6 +256,7 @@ class RoomManager {
     const participant = room.removeParticipant(userId);
     if (room.participants.size === 0) {
       this.rooms.delete(roomId);
+      this.playbackProgressPersistedAt.delete(roomId);
     }
     this.persistRoom(roomId);
 
@@ -268,6 +270,7 @@ class RoomManager {
     }
 
     this.rooms.delete(roomId);
+    this.playbackProgressPersistedAt.delete(roomId);
     await this.persistRoom(roomId);
     return room;
   }
@@ -354,6 +357,23 @@ class RoomManager {
     }
 
     this.persistRoom(roomId);
+    return room;
+  }
+
+  updatePlaybackProgress(roomId, currentTime) {
+    const room = this.getRoom(roomId);
+    if (!room || !Number.isFinite(currentTime)) {
+      return null;
+    }
+
+    room.currentTime = Math.max(0, currentTime);
+    const now = Date.now();
+    const lastPersistedAt = this.playbackProgressPersistedAt.get(roomId) || 0;
+    if (now - lastPersistedAt >= 10000) {
+      this.playbackProgressPersistedAt.set(roomId, now);
+      this.persistRoom(roomId);
+    }
+
     return room;
   }
 }

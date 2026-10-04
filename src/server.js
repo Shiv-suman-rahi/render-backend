@@ -140,7 +140,8 @@ io.on('connection', (socket) => {
     socket.data.roomId = cleanRoomId;
     socket.data.userId = participant.userId;
 
-    io.to(cleanRoomId).emit('sync_state', room.toJSON());
+    socket.to(cleanRoomId).emit('participants_updated', room.toJSON().participants);
+    socket.emit('sync_state', room.toJSON());
     socket.emit('session', {
       userId: participant.userId,
       roomId: cleanRoomId,
@@ -203,6 +204,24 @@ io.on('connection', (socket) => {
 
     roomManager.updatePlayback(room.roomId, { currentTime: Math.max(0, seconds) });
     io.to(room.roomId).emit('sync_state', room.toJSON());
+  });
+
+  socket.on('playback_progress', ({ roomId, time }) => {
+    const cleanRoomId = String(roomId || '').trim().toUpperCase();
+    const room = roomManager.getRoom(cleanRoomId);
+    if (!room || socket.data.roomId !== cleanRoomId) {
+      return;
+    }
+
+    const participant = roomManager.getParticipant(room.roomId, socket.data.userId);
+    if (!participant || participant.socketId !== socket.id || !canControlPlayback(participant)) {
+      return;
+    }
+
+    const seconds = Number(time);
+    if (Number.isFinite(seconds) && seconds >= 0) {
+      roomManager.updatePlaybackProgress(room.roomId, seconds);
+    }
   });
 
   socket.on('change_video', ({ roomId, videoId }) => {
