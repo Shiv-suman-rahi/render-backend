@@ -15,10 +15,13 @@ const User = require('./models/User');
 const app = express();
 const server = http.createServer(app);
 
-const clientUrls = (process.env.CLIENT_URL || 'https://vercel-frontend-beta-nine.vercel.app')
-  .split(',')
-  .map((url) => url.trim())
-  .filter(Boolean);
+const clientUrls = [...new Set([
+  ...(process.env.CLIENT_URL || 'https://vercel-frontend-beta-nine.vercel.app')
+    .split(',')
+    .map((url) => url.trim())
+    .filter(Boolean),
+  'https://vercel-frontend-lkjj.vercel.app',
+])];
 const port = Number(process.env.PORT || 3000);
 
 const corsOptions = {
