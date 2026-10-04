@@ -39,7 +39,7 @@ class Room {
   constructor(roomId, hostId) {
     this.roomId = roomId;
     this.hostId = hostId;
-    this.videoId = 'fb4rgYbi84c';
+    this.videoId = null;
     this.currentTime = 0;
     this.playState = 'PAUSED';
     this.participants = new Map();
@@ -127,7 +127,7 @@ class RoomManager {
 
     for (const document of documents) {
       const room = new Room(document.roomId, document.hostId);
-      room.videoId = document.videoId;
+      room.videoId = document.videoId || null;
       room.currentTime = document.currentTime;
       room.playState = document.playState;
       room.createdAt = document.createdAt;
