@@ -224,6 +224,47 @@ io.on('connection', (socket) => {
     }
   });
 
+  socket.on('chat_send', (payload = {}) => {
+    const { roomId, text, type, videoTime } = payload && typeof payload === 'object' ? payload : {};
+    const cleanRoomId = String(roomId || '').trim().toUpperCase();
+    const room = roomManager.getRoom(cleanRoomId);
+    const participant = roomManager.getParticipant(cleanRoomId, socket.data.userId);
+    if (
+      !room
+      || socket.data.roomId !== cleanRoomId
+      || !participant
+      || participant.socketId !== socket.id
+    ) {
+      socket.emit('chat_error', { message: 'Join the room before sending a chat message.' });
+      return;
+    }
+
+    const cleanText = typeof text === 'string' ? text.trim() : '';
+    const cleanType = type === 'reaction' ? 'reaction' : 'message';
+    const allowedReactions = ['❤️', '😂', '👏', '😮', '🔥'];
+    if (
+      !cleanText
+      || cleanText.length > 300
+      || (cleanType === 'reaction' && !allowedReactions.includes(cleanText))
+    ) {
+      socket.emit('chat_error', { message: 'Chat messages must be 1–300 characters, and reactions must use a quick-reaction button.' });
+      return;
+    }
+
+    const numericVideoTime = Number(videoTime);
+    io.to(cleanRoomId).emit('chat_message', {
+      id: `${Date.now()}-${socket.id}`,
+      roomId: cleanRoomId,
+      userId: participant.userId,
+      username: participant.username,
+      role: participant.role,
+      text: cleanText,
+      type: cleanType,
+      videoTime: Number.isFinite(numericVideoTime) ? Math.max(0, Math.floor(numericVideoTime)) : 0,
+      createdAt: new Date().toISOString(),
+    });
+  });
+
   socket.on('change_video', ({ roomId, videoId }) => {
     const room = roomManager.getRoom(String(roomId || '').trim().toUpperCase());
     if (!room) {
