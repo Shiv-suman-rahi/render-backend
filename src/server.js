@@ -239,6 +239,11 @@ io.on('connection', (socket) => {
       return;
     }
 
+    if (!room.chatEnabled) {
+      socket.emit('chat_error', { message: 'Chat is currently turned off by the host.' });
+      return;
+    }
+
     const cleanText = typeof text === 'string' ? text.trim() : '';
     const cleanType = type === 'reaction' ? 'reaction' : 'message';
     const allowedReactions = ['❤️', '😂', '👏', '😮', '🔥'];
@@ -263,6 +268,32 @@ io.on('connection', (socket) => {
       videoTime: Number.isFinite(numericVideoTime) ? Math.max(0, Math.floor(numericVideoTime)) : 0,
       createdAt: new Date().toISOString(),
     });
+  });
+
+  socket.on('set_chat_enabled', (payload = {}) => {
+    const { roomId, enabled } = payload && typeof payload === 'object' ? payload : {};
+    const cleanRoomId = String(roomId || '').trim().toUpperCase();
+    const room = roomManager.getRoom(cleanRoomId);
+    const caller = roomManager.getParticipant(cleanRoomId, socket.data.userId);
+    if (
+      !room
+      || socket.data.roomId !== cleanRoomId
+      || !caller
+      || caller.socketId !== socket.id
+      || room.hostId !== caller.userId
+      || !canManageParticipants(caller)
+    ) {
+      socket.emit('error', { message: 'Only the current host can change chat settings.' });
+      return;
+    }
+
+    if (typeof enabled !== 'boolean') {
+      socket.emit('error', { message: 'Chat setting must be enabled or disabled.' });
+      return;
+    }
+
+    roomManager.updateChatEnabled(cleanRoomId, enabled);
+    emitRoomState(io, cleanRoomId);
   });
 
   socket.on('change_video', ({ roomId, videoId }) => {

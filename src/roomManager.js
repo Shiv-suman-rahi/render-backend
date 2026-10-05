@@ -42,6 +42,7 @@ class Room {
     this.videoId = null;
     this.currentTime = 0;
     this.playState = 'PAUSED';
+    this.chatEnabled = true;
     this.participants = new Map();
     this.createdAt = new Date().toISOString();
   }
@@ -108,6 +109,7 @@ class Room {
       videoId: this.videoId,
       currentTime: this.currentTime,
       playState: this.playState,
+      chatEnabled: this.chatEnabled,
       participants: Array.from(this.participants.values()).map((participant) => participant.toJSON()),
       createdAt: this.createdAt,
     };
@@ -131,6 +133,7 @@ class RoomManager {
       room.videoId = document.videoId || null;
       room.currentTime = document.currentTime;
       room.playState = document.playState;
+      room.chatEnabled = document.chatEnabled !== false;
       room.createdAt = document.createdAt;
 
       for (const savedParticipant of document.participants || []) {
@@ -356,6 +359,17 @@ class RoomManager {
       room.playState = playState;
     }
 
+    this.persistRoom(roomId);
+    return room;
+  }
+
+  updateChatEnabled(roomId, enabled) {
+    const room = this.getRoom(roomId);
+    if (!room) {
+      return null;
+    }
+
+    room.chatEnabled = enabled;
     this.persistRoom(roomId);
     return room;
   }

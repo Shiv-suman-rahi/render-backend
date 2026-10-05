@@ -55,6 +55,10 @@ const roomSchema = new mongoose.Schema(
       default: 0,
       min: 0,
     },
+    chatEnabled: {
+      type: Boolean,
+      default: true,
+    },
     participants: [participantSchema],
   },
   {
