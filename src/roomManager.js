@@ -81,7 +81,9 @@ class Room {
     }
 
     if (this.hostId === userId) {
-      const [nextHost] = this.participants.values();
+      const nextHost = Array.from(this.participants.values()).find(
+        (candidate) => candidate.role === ROLE_TYPES.MODERATOR,
+      ) || this.participants.values().next().value;
       if (nextHost) {
         this.hostId = nextHost.userId;
         nextHost.role = ROLE_TYPES.HOST;

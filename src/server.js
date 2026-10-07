@@ -600,35 +600,89 @@ io.on('connection', (socket) => {
     io.in(cleanRoomId).socketsLeave(cleanRoomId);
   });
 
-  socket.on('leave_room', ({ roomId }) => {
-    const room = roomManager.getRoom(String(roomId || '').trim().toUpperCase());
+  socket.on('leave_room', async ({ roomId, promoteToUserId } = {}) => {
+    const cleanRoomId = String(roomId || '').trim().toUpperCase();
+    const room = roomManager.getRoom(cleanRoomId);
     if (!room) {
       socket.emit('error', { message: 'Room not found.' });
       return;
     }
 
-    const participant = roomManager.getParticipant(room.roomId, socket.data.userId);
-    if (!participant) {
+    const participant = roomManager.getParticipant(cleanRoomId, socket.data.userId);
+    if (
+      socket.data.roomId !== cleanRoomId
+      || !participant
+      || participant.socketId !== socket.id
+    ) {
       socket.leave(room.roomId);
       socket.data.roomId = null;
       socket.data.userId = null;
       return;
     }
 
-    roomManager.removeParticipant(room.roomId, socket.data.userId);
-    socket.to(room.roomId).emit('user_left', {
+    if (room.hostId === participant.userId) {
+      let moderator = Array.from(room.participants.values()).find(
+        (candidate) => (
+          candidate.userId !== participant.userId
+          && candidate.role === ROLE_TYPES.MODERATOR
+          && candidate.socketId
+        ),
+      );
+
+      if (!moderator && promoteToUserId) {
+        const selected = room.getParticipant(String(promoteToUserId));
+        if (!selected || selected.userId === participant.userId || !selected.socketId) {
+          socket.emit('error', { message: 'Select a valid participant to promote before leaving.' });
+          return;
+        }
+
+        selected.role = ROLE_TYPES.MODERATOR;
+        moderator = selected;
+      }
+
+      if (!moderator) {
+        let closedRoom;
+        try {
+          closedRoom = await roomManager.closeRoom(cleanRoomId);
+        } catch (error) {
+          console.error(`Failed to close room ${cleanRoomId} after host departure:`, error);
+          socket.emit('error', { message: 'The room could not be closed. Please try again.' });
+          return;
+        }
+
+        io.to(cleanRoomId).emit('room_closed', {
+          roomId: cleanRoomId,
+          hostId: closedRoom.hostId,
+          message: 'The host left without appointing a moderator, so this room is now closed.',
+        });
+        io.in(cleanRoomId).socketsLeave(cleanRoomId);
+        socket.data.roomId = null;
+        socket.data.userId = null;
+        return;
+      }
+    }
+
+    roomManager.removeParticipant(cleanRoomId, participant.userId);
+    try {
+      await roomManager.persistRoom(cleanRoomId, { throwOnError: true });
+    } catch (error) {
+      console.error(`Failed to persist participant leaving room ${cleanRoomId}:`, error);
+      socket.emit('error', { message: 'Your room departure could not be saved.' });
+    }
+    socket.to(cleanRoomId).emit('user_left', {
       userId: participant.userId,
-      roomId: room.roomId,
+      roomId: cleanRoomId,
       username: participant.username,
     });
 
-    if (roomManager.getRoom(room.roomId)) {
-      io.to(room.roomId).emit('sync_state', roomManager.getRoom(room.roomId).toJSON());
+    if (roomManager.getRoom(cleanRoomId)) {
+      io.to(cleanRoomId).emit('sync_state', roomManager.getRoom(cleanRoomId).toJSON());
     }
 
-    socket.leave(room.roomId);
+    socket.leave(cleanRoomId);
     socket.data.roomId = null;
     socket.data.userId = null;
+    socket.emit('room_left', { roomId: cleanRoomId });
   });
 
   socket.on('disconnect', () => {
