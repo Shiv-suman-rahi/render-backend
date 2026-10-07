@@ -39,7 +39,13 @@ app.use(cors(corsOptions));
 app.use(express.json());
 
 const roomManager = new RoomManager();
+const pendingRejoinRequests = new Map();
 let isShuttingDown = false;
+
+function getPendingRejoinRequests(roomId) {
+  return Array.from(pendingRejoinRequests.get(roomId)?.values() || [])
+    .map(({ userId, username }) => ({ userId, username }));
+}
 
 function emitRoomState(ioInstance, roomId) {
   const room = roomManager.getRoom(roomId);
@@ -118,7 +124,32 @@ io.on('connection', (socket) => {
     if (userId) {
       const cleanUserId = String(userId);
       if (room.bannedUserIds.has(cleanUserId)) {
-        socket.emit('error', { message: 'You were removed from this room and cannot rejoin.' });
+        let roomRequests = pendingRejoinRequests.get(cleanRoomId);
+        if (!roomRequests) {
+          roomRequests = new Map();
+          pendingRejoinRequests.set(cleanRoomId, roomRequests);
+        }
+
+        const existingRequest = roomRequests.get(cleanUserId);
+        if (existingRequest && existingRequest.socketId !== socket.id) {
+          socket.emit('error', { message: 'Your request to rejoin is already waiting for the host.' });
+          return;
+        }
+
+        roomRequests.set(cleanUserId, {
+          userId: cleanUserId,
+          username: cleanUsername,
+          socketId: socket.id,
+        });
+        socket.data.pendingRejoinRoomId = cleanRoomId;
+        socket.data.pendingRejoinUserId = cleanUserId;
+        socket.emit('rejoin_pending', {
+          message: 'Your request to rejoin has been sent to the host. Please wait for approval.',
+        });
+        io.to(cleanRoomId).emit('rejoin_request', {
+          userId: cleanUserId,
+          username: cleanUsername,
+        });
         return;
       }
 
@@ -173,6 +204,88 @@ io.on('connection', (socket) => {
       roomId: cleanRoomId,
       role: participant.role,
     });
+    if (room.hostId === participant.userId) {
+      socket.emit('rejoin_requests', getPendingRejoinRequests(cleanRoomId));
+    }
+  });
+
+  socket.on('approve_rejoin', async ({ roomId, userId } = {}) => {
+    const cleanRoomId = String(roomId || '').trim().toUpperCase();
+    const room = roomManager.getRoom(cleanRoomId);
+    const caller = roomManager.getParticipant(cleanRoomId, socket.data.userId);
+    if (
+      !room
+      || socket.data.roomId !== cleanRoomId
+      || !caller
+      || caller.socketId !== socket.id
+      || room.hostId !== caller.userId
+    ) {
+      socket.emit('error', { message: 'Only the current host can approve rejoin requests.' });
+      return;
+    }
+
+    const cleanUserId = String(userId || '');
+    const roomRequests = pendingRejoinRequests.get(cleanRoomId);
+    const request = roomRequests?.get(cleanUserId);
+    const requesterSocket = request && io.sockets.sockets.get(request.socketId);
+    if (!request || !requesterSocket || !room.bannedUserIds.has(cleanUserId)) {
+      roomRequests?.delete(cleanUserId);
+      socket.emit('rejoin_request_resolved', { userId: cleanUserId });
+      socket.emit('error', { message: 'That rejoin request is no longer available.' });
+      return;
+    }
+
+    const duplicateName = Array.from(room.participants.values()).find(
+      (current) => current.username.trim().toLowerCase() === request.username.toLowerCase(),
+    );
+    if (duplicateName) {
+      socket.emit('error', { message: `${request.username} cannot rejoin because that name is already in use.` });
+      return;
+    }
+
+    roomRequests.delete(cleanUserId);
+    room.bannedUserIds.delete(cleanUserId);
+    const participant = roomManager.addParticipant(cleanRoomId, request.username, requesterSocket.id, cleanUserId);
+    try {
+      await User.findOneAndUpdate(
+        { userId: participant.userId },
+        { $set: { username: participant.username, lastSeen: new Date() } },
+        { upsert: true, new: true, runValidators: true, setDefaultsOnInsert: true },
+      );
+      await roomManager.persistRoom(cleanRoomId, { throwOnError: true });
+    } catch (error) {
+      console.error(`Failed to persist approved rejoin in room ${cleanRoomId}:`, error);
+      roomManager.removeParticipant(cleanRoomId, cleanUserId);
+      room.bannedUserIds.add(cleanUserId);
+      if (requesterSocket.connected) {
+        roomRequests.set(cleanUserId, request);
+      }
+      try {
+        await roomManager.persistRoom(cleanRoomId, { throwOnError: true });
+      } catch (rollbackError) {
+        console.error(`Failed to restore rejoin ban in room ${cleanRoomId}:`, rollbackError);
+      }
+      socket.emit('error', { message: 'The rejoin approval could not be saved. Please try again.' });
+      return;
+    }
+
+    if (roomRequests.size === 0) {
+      pendingRejoinRequests.delete(cleanRoomId);
+    }
+
+    requesterSocket.data.roomId = cleanRoomId;
+    requesterSocket.data.userId = cleanUserId;
+    requesterSocket.data.pendingRejoinRoomId = null;
+    requesterSocket.data.pendingRejoinUserId = null;
+    requesterSocket.join(cleanRoomId);
+    requesterSocket.emit('sync_state', room.toJSON());
+    requesterSocket.emit('session', {
+      userId: participant.userId,
+      roomId: cleanRoomId,
+      role: participant.role,
+    });
+    io.to(cleanRoomId).emit('sync_state', room.toJSON());
+    io.to(cleanRoomId).emit('rejoin_request_resolved', { userId: cleanUserId });
   });
 
   socket.on('play', ({ roomId }) => {
@@ -519,6 +632,19 @@ io.on('connection', (socket) => {
   });
 
   socket.on('disconnect', () => {
+    const pendingRoomId = socket.data.pendingRejoinRoomId;
+    const pendingUserId = socket.data.pendingRejoinUserId;
+    if (pendingRoomId && pendingUserId) {
+      const requests = pendingRejoinRequests.get(pendingRoomId);
+      if (requests?.get(pendingUserId)?.socketId === socket.id) {
+        requests.delete(pendingUserId);
+        if (requests.size === 0) {
+          pendingRejoinRequests.delete(pendingRoomId);
+        }
+        io.to(pendingRoomId).emit('rejoin_request_resolved', { userId: pendingUserId });
+      }
+    }
+
     if (isShuttingDown) {
       return;
     }
