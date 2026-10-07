@@ -96,6 +96,13 @@ io.on('connection', (socket) => {
 
     const room = roomManager.getRoom(cleanRoomId);
     if (!room) {
+      if (roomManager.isRoomClosed(cleanRoomId)) {
+        socket.emit('room_closed', {
+          roomId: cleanRoomId,
+          message: 'This room is closed.',
+        });
+        return;
+      }
       socket.emit('error', { message: 'Room not found. Please check the code and try again.' });
       return;
     }
@@ -109,14 +116,33 @@ io.on('connection', (socket) => {
     let participant = null;
 
     if (userId) {
-      participant = room.getParticipant(String(userId));
+      const cleanUserId = String(userId);
+      if (room.bannedUserIds.has(cleanUserId)) {
+        socket.emit('error', { message: 'You were removed from this room and cannot rejoin.' });
+        return;
+      }
+
+      participant = room.getParticipant(cleanUserId);
       if (participant) {
+        if (participant.socketId && participant.socketId !== socket.id) {
+          socket.emit('error', { message: 'You are already in this room.' });
+          return;
+        }
         participant.socketId = socket.id;
       }
     }
 
     if (!participant) {
-      participant = room.getParticipantBySocketId(socket.id) || roomManager.addParticipant(cleanRoomId, cleanUsername, socket.id);
+      const duplicateName = Array.from(room.participants.values()).find(
+        (current) => current.username.trim().toLowerCase() === cleanUsername.toLowerCase(),
+      );
+      if (duplicateName) {
+        socket.emit('error', { message: 'A participant with this name is already in the room.' });
+        return;
+      }
+
+      participant = room.getParticipantBySocketId(socket.id)
+        || roomManager.addParticipant(cleanRoomId, cleanUsername, socket.id, userId ? String(userId) : undefined);
     }
 
     if (participant.username !== cleanUsername) {
@@ -358,7 +384,7 @@ io.on('connection', (socket) => {
     });
   });
 
-  socket.on('remove_participant', ({ roomId, userId }) => {
+  socket.on('remove_participant', async ({ roomId, userId }) => {
     const room = roomManager.getRoom(String(roomId || '').trim().toUpperCase());
     if (!room) {
       socket.emit('error', { message: 'Room not found.' });
@@ -382,10 +408,18 @@ io.on('connection', (socket) => {
       return;
     }
 
-    const removed = roomManager.removeParticipant(room.roomId, userId);
+    const removed = roomManager.removeParticipant(room.roomId, userId, { ban: true });
     if (!removed) {
       socket.emit('error', { message: 'Unable to remove this participant.' });
       return;
+    }
+
+    let removalPersisted = true;
+    try {
+      await roomManager.persistRoom(room.roomId, { throwOnError: true });
+    } catch (error) {
+      console.error(`Failed to persist participant removal in room ${room.roomId}:`, error);
+      removalPersisted = false;
     }
 
     if (roomManager.getRoom(room.roomId)) {
@@ -406,6 +440,9 @@ io.on('connection', (socket) => {
       removedSocket.leave(room.roomId);
       removedSocket.data.roomId = null;
       removedSocket.data.userId = null;
+    }
+    if (!removalPersisted) {
+      socket.emit('error', { message: 'The participant was removed, but the ban could not be saved.' });
     }
   });
 
@@ -429,7 +466,14 @@ io.on('connection', (socket) => {
       return;
     }
 
-    const closedRoom = await roomManager.closeRoom(cleanRoomId);
+    let closedRoom;
+    try {
+      closedRoom = await roomManager.closeRoom(cleanRoomId);
+    } catch (error) {
+      console.error(`Failed to persist closed room ${cleanRoomId}:`, error);
+      socket.emit('error', { message: 'The room could not be closed permanently. Please try again.' });
+      return;
+    }
     if (!closedRoom) {
       socket.emit('error', { message: 'Unable to close this room.' });
       return;

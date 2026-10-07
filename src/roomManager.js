@@ -44,6 +44,7 @@ class Room {
     this.playState = 'PAUSED';
     this.chatEnabled = true;
     this.participants = new Map();
+    this.bannedUserIds = new Set();
     this.createdAt = new Date().toISOString();
   }
 
@@ -64,13 +65,16 @@ class Room {
     return null;
   }
 
-  removeParticipant(userId) {
+  removeParticipant(userId, { ban = false } = {}) {
     const participant = this.participants.get(userId);
     if (!participant) {
       return null;
     }
 
     this.participants.delete(userId);
+    if (ban) {
+      this.bannedUserIds.add(userId);
+    }
 
     if (this.participants.size === 0) {
       return participant;
@@ -119,6 +123,7 @@ class Room {
 class RoomManager {
   constructor() {
     this.rooms = new Map();
+    this.closedRooms = new Map();
     this.roomsCollection = null;
     this.pendingWrites = new Map();
     this.playbackProgressPersistedAt = new Map();
@@ -129,12 +134,18 @@ class RoomManager {
     const documents = await roomsCollection.find({}).toArray();
 
     for (const document of documents) {
+      if (document.closed) {
+        this.closedRooms.set(document.roomId, document.closedAt || new Date().toISOString());
+        continue;
+      }
+
       const room = new Room(document.roomId, document.hostId);
       room.videoId = document.videoId || null;
       room.currentTime = document.currentTime;
       room.playState = document.playState;
       room.chatEnabled = document.chatEnabled !== false;
       room.createdAt = document.createdAt;
+      room.bannedUserIds = new Set(document.bannedUserIds || []);
 
       for (const savedParticipant of document.participants || []) {
         const participant = new Participant(
@@ -166,11 +177,21 @@ class RoomManager {
       .then(async () => {
         const room = this.getRoom(roomId);
         if (!room) {
-          await this.roomsCollection.deleteOne({ roomId });
+          const closedAt = this.closedRooms.get(roomId);
+          if (closedAt) {
+            await this.roomsCollection.updateOne(
+              { roomId },
+              { $set: { roomId, closed: true, closedAt }, $unset: { participants: '' } },
+              { upsert: true },
+            );
+          } else {
+            await this.roomsCollection.deleteOne({ roomId });
+          }
           return;
         }
 
         const document = room.toJSON();
+        document.bannedUserIds = Array.from(room.bannedUserIds);
         document.participants = document.participants.map((participant) => ({
           userId: participant.userId,
           username: participant.username,
@@ -216,7 +237,7 @@ class RoomManager {
 
   createRoom({ username, socketId, userId }) {
     let roomId = this.generateRoomCode();
-    while (this.rooms.has(roomId)) {
+    while (this.rooms.has(roomId) || this.closedRooms.has(roomId)) {
       roomId = this.generateRoomCode();
     }
 
@@ -237,26 +258,26 @@ class RoomManager {
     return this.rooms.get(roomId) || null;
   }
 
-  addParticipant(roomId, username, socketId) {
+  addParticipant(roomId, username, socketId, userId) {
     const room = this.getRoom(roomId);
     if (!room) {
       throw new Error('Room not found');
     }
 
-    const userId = this.createUserId();
-    const participant = new Participant(userId, username, socketId, ROLE_TYPES.PARTICIPANT);
+    const participantId = userId || this.createUserId();
+    const participant = new Participant(participantId, username, socketId, ROLE_TYPES.PARTICIPANT);
     room.addParticipant(participant);
     this.persistRoom(roomId);
     return participant;
   }
 
-  removeParticipant(roomId, userId) {
+  removeParticipant(roomId, userId, { ban = false } = {}) {
     const room = this.getRoom(roomId);
     if (!room) {
       return null;
     }
 
-    const participant = room.removeParticipant(userId);
+    const participant = room.removeParticipant(userId, { ban });
     if (room.participants.size === 0) {
       this.rooms.delete(roomId);
       this.playbackProgressPersistedAt.delete(roomId);
@@ -273,9 +294,15 @@ class RoomManager {
     }
 
     this.rooms.delete(roomId);
+    const closedAt = new Date().toISOString();
+    this.closedRooms.set(roomId, closedAt);
     this.playbackProgressPersistedAt.delete(roomId);
-    await this.persistRoom(roomId);
+    await this.persistRoom(roomId, { throwOnError: true });
     return room;
+  }
+
+  isRoomClosed(roomId) {
+    return this.closedRooms.has(roomId);
   }
 
   getParticipant(roomId, userId) {

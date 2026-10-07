@@ -59,6 +59,18 @@ const roomSchema = new mongoose.Schema(
       type: Boolean,
       default: true,
     },
+    bannedUserIds: {
+      type: [String],
+      default: [],
+    },
+    closed: {
+      type: Boolean,
+      default: false,
+    },
+    closedAt: {
+      type: Date,
+      default: null,
+    },
     participants: [participantSchema],
   },
   {
