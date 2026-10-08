@@ -156,8 +156,8 @@ io.on('connection', (socket) => {
       participant = room.getParticipant(cleanUserId);
       if (participant) {
         if (participant.socketId && participant.socketId !== socket.id) {
-          socket.emit('error', { message: 'You are already in this room.' });
-          return;
+          const previousSocket = io.sockets.sockets.get(participant.socketId);
+          previousSocket?.disconnect(true);
         }
         participant.socketId = socket.id;
       }
