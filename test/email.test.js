@@ -18,7 +18,7 @@ test('Gmail authentication failures explain the required app password without ex
 test('SMTP connectivity and sender errors identify configuration areas', () => {
   assert.match(
     getEmailDeliveryErrorMessage({ code: 'ETIMEDOUT' }),
-    /SMTP_HOST, SMTP_PORT, and SMTP_SECURE/,
+    /Render Free.*SMTP ports are blocked.*RESEND_API_KEY/,
   );
   assert.match(
     getEmailDeliveryErrorMessage({ responseCode: 550 }),
