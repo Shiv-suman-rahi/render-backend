@@ -394,23 +394,18 @@ io.on('connection', (socket) => {
 
       participant = room.getParticipant(cleanUserId);
       if (participant) {
-        if (participant.socketId && participant.socketId !== socket.id) {
-          const previousSocket = io.sockets.sockets.get(participant.socketId);
-          previousSocket?.disconnect(true);
+        const existingSocket = participant.socketId
+          ? io.sockets.sockets.get(participant.socketId)
+          : null;
+        if (existingSocket && participant.socketId !== socket.id) {
+          socket.emit('error', { message: 'This profile is already connected to the room.' });
+          return;
         }
         participant.socketId = socket.id;
       }
     }
 
     if (!participant) {
-      const duplicateName = Array.from(room.participants.values()).find(
-        (current) => current.username.trim().toLowerCase() === cleanUsername.toLowerCase(),
-      );
-      if (duplicateName) {
-        socket.emit('error', { message: 'A participant with this name is already in the room.' });
-        return;
-      }
-
       participant = room.getParticipantBySocketId(socket.id)
         || roomManager.addParticipant(
           cleanRoomId,
