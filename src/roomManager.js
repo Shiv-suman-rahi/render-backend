@@ -28,7 +28,6 @@ class Participant {
       userId: this.userId,
       username: this.username,
       role: this.role,
-      socketId: this.socketId,
       connectedAt: this.connectedAt,
       online: Boolean(this.socketId),
     };

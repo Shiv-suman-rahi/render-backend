@@ -8,25 +8,38 @@ const { Server } = require('socket.io');
 require('dotenv').config();
 
 const { RoomManager, ROLE_TYPES } = require('./roomManager');
-const { canControlPlayback, canManageParticipants, isHost } = require('./permissions');
+const { canControlPlayback, canManageParticipants } = require('./permissions');
 const { connectToMongo, closeMongoConnection } = require('./database');
 const User = require('./models/User');
+const AuthSession = require('./models/AuthSession');
+const {
+  clearSessionCookie,
+  createSession,
+  hashPassword,
+  resolveSession,
+  serializeUser,
+  validateCsrf,
+  verifyPassword,
+} = require('./auth');
 
 const app = express();
 const server = http.createServer(app);
 
-const clientUrls = [...new Set([
-  ...(process.env.CLIENT_URL || 'https://vercel-frontend-beta-nine.vercel.app')
+const clientUrls = new Set(
+  (process.env.CLIENT_URL || '')
     .split(',')
-    .map((url) => url.trim())
+    .map((url) => url.trim().replace(/\/$/, ''))
     .filter(Boolean),
-  'https://vercel-frontend-lkjj.vercel.app',
-])];
+);
+if (process.env.NODE_ENV !== 'production') {
+  clientUrls.add('http://localhost:5173');
+}
 const port = Number(process.env.PORT || 3000);
+const rateLimitBuckets = new Map();
 
 const corsOptions = {
   origin: (origin, callback) => {
-    if (!origin || clientUrls.includes(origin)) {
+    if (!origin || clientUrls.has(origin)) {
       callback(null, true);
       return;
     }
@@ -41,6 +54,9 @@ app.use(express.json());
 const roomManager = new RoomManager();
 const pendingRejoinRequests = new Map();
 let isShuttingDown = false;
+let io;
+
+app.set('trust proxy', 1);
 
 function getPendingRejoinRequests(roomId) {
   return Array.from(pendingRejoinRequests.get(roomId)?.values() || [])
@@ -56,23 +72,191 @@ function emitRoomState(ioInstance, roomId) {
   ioInstance.to(roomId).emit('sync_state', room.toJSON());
 }
 
+function rateLimit({ limit, windowMs }) {
+  return (req, res, next) => {
+    const now = Date.now();
+    for (const [key, bucket] of rateLimitBuckets) {
+      if (bucket.expiresAt <= now) rateLimitBuckets.delete(key);
+    }
+
+    const key = `${req.ip}:${req.path}`;
+    const bucket = rateLimitBuckets.get(key);
+    if (bucket && bucket.count >= limit) {
+      res.set('Retry-After', String(Math.ceil((bucket.expiresAt - now) / 1000)));
+      return res.status(429).json({ message: 'Too many attempts. Please try again later.' });
+    }
+
+    if (!bucket || bucket.expiresAt <= now) {
+      rateLimitBuckets.set(key, { count: 1, expiresAt: now + windowMs });
+    } else {
+      bucket.count += 1;
+    }
+    return next();
+  };
+}
+
+async function requireAuth(req, res, next) {
+  try {
+    const auth = await resolveSession(req.headers.cookie);
+    if (!auth) return res.status(401).json({ message: 'Please sign in to continue.' });
+    req.authSession = auth.session;
+    req.user = auth.user;
+    return next();
+  } catch (error) {
+    console.error('Failed to resolve authenticated session:', error);
+    return res.status(500).json({ message: 'Unable to verify your session.' });
+  }
+}
+
+function requireTrustedOrigin(req, res, next) {
+  const origin = req.get('origin');
+  if (!origin || !clientUrls.has(origin)) {
+    return res.status(403).json({ message: 'Request origin is not allowed.' });
+  }
+  return next();
+}
+
+function requireCsrf(req, res, next) {
+  if (!validateCsrf(req.authSession, req.get('x-csrf-token'))) {
+    return res.status(403).json({ message: 'Your session could not be verified. Refresh and try again.' });
+  }
+  return next();
+}
+
+app.post('/api/auth/register', rateLimit({ limit: 8, windowMs: 15 * 60 * 1000 }), requireTrustedOrigin, async (req, res) => {
+  const username = typeof req.body?.username === 'string' ? req.body.username.trim() : '';
+  const email = typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase() : '';
+  const password = typeof req.body?.password === 'string' ? req.body.password : '';
+
+  if (username.length < 2 || username.length > 30) {
+    return res.status(400).json({ message: 'Username must be between 2 and 30 characters.' });
+  }
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 254) {
+    return res.status(400).json({ message: 'Enter a valid email address.' });
+  }
+  if (password.length < 10 || password.length > 128) {
+    return res.status(400).json({ message: 'Password must be between 10 and 128 characters.' });
+  }
+
+  try {
+    const user = await User.create({
+      username,
+      email,
+      passwordHash: await hashPassword(password),
+      avatarUrl: '',
+    });
+    const { csrfToken } = await createSession(user, res);
+    return res.status(201).json({ user: serializeUser(user), csrfToken });
+  } catch (error) {
+    if (error.code === 11000 && (error.keyPattern?.email || error.keyValue?.email)) {
+      return res.status(409).json({ message: 'An account with this email already exists.' });
+    }
+    if (error.name === 'ValidationError') {
+      return res.status(400).json({ message: 'Please check your account details and try again.' });
+    }
+    console.error('Failed to register account:', error);
+    return res.status(500).json({ message: 'Unable to create your account right now.' });
+  }
+});
+
+app.post('/api/auth/login', rateLimit({ limit: 8, windowMs: 15 * 60 * 1000 }), requireTrustedOrigin, async (req, res) => {
+  const email = typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase() : '';
+  const password = typeof req.body?.password === 'string' ? req.body.password : '';
+  if (!email || !password || password.length > 128) {
+    return res.status(401).json({ message: 'Invalid email or password.' });
+  }
+
+  try {
+    const user = await User.findOne({ email }).select('+passwordHash');
+    if (!user || !await verifyPassword(password, user.passwordHash)) {
+      return res.status(401).json({ message: 'Invalid email or password.' });
+    }
+    const { csrfToken } = await createSession(user, res);
+    return res.json({ user: serializeUser(user), csrfToken });
+  } catch (error) {
+    console.error('Failed to log in:', error);
+    return res.status(500).json({ message: 'Unable to sign in right now.' });
+  }
+});
+
+app.get('/api/auth/me', requireAuth, (req, res) => {
+  res.json({ user: serializeUser(req.user), csrfToken: req.authSession.csrfToken });
+});
+
+app.post('/api/auth/logout', requireAuth, requireTrustedOrigin, requireCsrf, async (req, res) => {
+  try {
+    const sessionId = String(req.authSession._id);
+    await AuthSession.deleteOne({ _id: req.authSession._id });
+    clearSessionCookie(res);
+    for (const socket of io.sockets.sockets.values()) {
+      if (socket.data.authSessionId === sessionId) socket.disconnect(true);
+    }
+    return res.json({ message: 'Signed out successfully.' });
+  } catch (error) {
+    console.error('Failed to log out:', error);
+    return res.status(500).json({ message: 'Unable to sign out right now.' });
+  }
+});
+
+app.patch('/api/users/me', requireAuth, requireTrustedOrigin, requireCsrf, async (req, res) => {
+  const updates = {};
+  if (Object.hasOwn(req.body || {}, 'username')) {
+    const username = typeof req.body.username === 'string' ? req.body.username.trim() : '';
+    if (username.length < 2 || username.length > 30) {
+      return res.status(400).json({ message: 'Username must be between 2 and 30 characters.' });
+    }
+    updates.username = username;
+  }
+  if (Object.hasOwn(req.body || {}, 'avatarUrl')) {
+    const avatarUrl = typeof req.body.avatarUrl === 'string' ? req.body.avatarUrl.trim() : '';
+    if (avatarUrl) {
+      try {
+        if (new URL(avatarUrl).protocol !== 'https:') throw new Error('Unsupported URL scheme.');
+      } catch {
+        return res.status(400).json({ message: 'Avatar must be a valid HTTPS image URL.' });
+      }
+    }
+    if (avatarUrl.length > 2048) {
+      return res.status(400).json({ message: 'Avatar URL is too long.' });
+    }
+    updates.avatarUrl = avatarUrl;
+  }
+  if (Object.keys(updates).length === 0) {
+    return res.status(400).json({ message: 'Provide a username or avatar URL to update.' });
+  }
+
+  try {
+    const user = await User.findByIdAndUpdate(req.user._id, { $set: updates }, {
+      new: true,
+      runValidators: true,
+    });
+    if (!user) return res.status(401).json({ message: 'Please sign in to continue.' });
+    if (updates.username) {
+      for (const room of roomManager.rooms.values()) {
+        const participant = room.getParticipant(String(user._id));
+        if (participant) {
+          participant.username = user.username;
+          await roomManager.persistRoom(room.roomId, { throwOnError: true });
+          emitRoomState(io, room.roomId);
+        }
+      }
+    }
+    return res.json({ user: serializeUser(user) });
+  } catch (error) {
+    console.error('Failed to update user profile:', error);
+    return res.status(500).json({ message: 'Unable to update your profile right now.' });
+  }
+});
+
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', message: 'Watch Party backend is running.' });
 });
 
-app.post('/api/rooms', async (req, res) => {
-  const username = String(req.body?.username || '').trim();
-  if (!username || username.length < 2) {
-    return res.status(400).json({ message: 'Username must be at least 2 characters long.' });
-  }
-
-  const { room, participant } = roomManager.createRoom({ username, socketId: null });
+app.post('/api/rooms', requireAuth, requireTrustedOrigin, requireCsrf, async (req, res) => {
+  const username = req.user.username;
+  const userId = String(req.user._id);
+  const { room, participant } = roomManager.createRoom({ username, userId, socketId: null });
   try {
-    await User.findOneAndUpdate(
-      { userId: participant.userId },
-      { $set: { username, lastSeen: new Date() } },
-      { upsert: true, new: true, runValidators: true, setDefaultsOnInsert: true },
-    );
     await roomManager.persistRoom(room.roomId, { throwOnError: true });
 
     return res.status(201).json({
@@ -86,17 +270,41 @@ app.post('/api/rooms', async (req, res) => {
   }
 });
 
-const io = new Server(server, {
+io = new Server(server, {
   cors: { ...corsOptions, methods: ['GET', 'POST'] },
 });
 
-io.on('connection', (socket) => {
-  socket.on('join_room', async ({ roomId, username, userId }) => {
-    const cleanRoomId = String(roomId || '').trim().toUpperCase();
-    const cleanUsername = String(username || '').trim();
+io.use(async (socket, next) => {
+  try {
+    const origin = socket.handshake.headers.origin;
+    if (!origin || !clientUrls.has(origin)) {
+      return next(new Error('Origin is not allowed.'));
+    }
+    const auth = await resolveSession(socket.handshake.headers.cookie);
+    if (!auth) return next(new Error('Authentication required.'));
+    socket.data.user = auth.user;
+    socket.data.authSessionId = String(auth.session._id);
+    socket.data.authExpiresAt = auth.session.expiresAt;
+    return next();
+  } catch (error) {
+    console.error('Failed to authenticate Socket.IO connection:', error);
+    return next(new Error('Unable to verify authentication.'));
+  }
+});
 
-    if (!cleanRoomId || !cleanUsername) {
-      socket.emit('error', { message: 'Please enter a valid room code and username.' });
+io.on('connection', (socket) => {
+  const authExpiryTimer = setTimeout(
+    () => socket.disconnect(true),
+    Math.max(0, new Date(socket.data.authExpiresAt).getTime() - Date.now()),
+  );
+  socket.on('join_room', async (payload = {}) => {
+    const { roomId } = payload && typeof payload === 'object' ? payload : {};
+    const cleanRoomId = String(roomId || '').trim().toUpperCase();
+    const cleanUsername = socket.data.user.username;
+    const cleanUserId = String(socket.data.user._id);
+
+    if (!cleanRoomId) {
+      socket.emit('error', { message: 'Please enter a valid room code.' });
       return;
     }
 
@@ -121,8 +329,7 @@ io.on('connection', (socket) => {
 
     let participant = null;
 
-    if (userId) {
-      const cleanUserId = String(userId);
+    {
       if (room.bannedUserIds.has(cleanUserId)) {
         let roomRequests = pendingRejoinRequests.get(cleanRoomId);
         if (!roomRequests) {
@@ -173,7 +380,7 @@ io.on('connection', (socket) => {
       }
 
       participant = room.getParticipantBySocketId(socket.id)
-        || roomManager.addParticipant(cleanRoomId, cleanUsername, socket.id, userId ? String(userId) : undefined);
+        || roomManager.addParticipant(cleanRoomId, cleanUsername, socket.id, cleanUserId);
     }
 
     if (participant.username !== cleanUsername) {
@@ -181,11 +388,6 @@ io.on('connection', (socket) => {
     }
 
     try {
-      await User.findOneAndUpdate(
-        { userId: participant.userId },
-        { $set: { username: cleanUsername, lastSeen: new Date() } },
-        { upsert: true, new: true, runValidators: true, setDefaultsOnInsert: true },
-      );
       await roomManager.persistRoom(cleanRoomId, { throwOnError: true });
     } catch (error) {
       console.error(`Failed to save participant joining room ${cleanRoomId}:`, error);
@@ -247,11 +449,6 @@ io.on('connection', (socket) => {
     room.bannedUserIds.delete(cleanUserId);
     const participant = roomManager.addParticipant(cleanRoomId, request.username, requesterSocket.id, cleanUserId);
     try {
-      await User.findOneAndUpdate(
-        { userId: participant.userId },
-        { $set: { username: participant.username, lastSeen: new Date() } },
-        { upsert: true, new: true, runValidators: true, setDefaultsOnInsert: true },
-      );
       await roomManager.persistRoom(cleanRoomId, { throwOnError: true });
     } catch (error) {
       console.error(`Failed to persist approved rejoin in room ${cleanRoomId}:`, error);
@@ -296,7 +493,12 @@ io.on('connection', (socket) => {
     }
 
     const participant = roomManager.getParticipant(room.roomId, socket.data.userId);
-    if (!participant || !canControlPlayback(participant)) {
+    if (
+      !participant
+      || participant.socketId !== socket.id
+      || socket.data.roomId !== room.roomId
+      || !canControlPlayback(participant)
+    ) {
       socket.emit('error', { message: 'You do not have permission to control playback.' });
       return;
     }
@@ -313,7 +515,12 @@ io.on('connection', (socket) => {
     }
 
     const participant = roomManager.getParticipant(room.roomId, socket.data.userId);
-    if (!participant || !canControlPlayback(participant)) {
+    if (
+      !participant
+      || participant.socketId !== socket.id
+      || socket.data.roomId !== room.roomId
+      || !canControlPlayback(participant)
+    ) {
       socket.emit('error', { message: 'You do not have permission to pause playback.' });
       return;
     }
@@ -330,7 +537,12 @@ io.on('connection', (socket) => {
     }
 
     const participant = roomManager.getParticipant(room.roomId, socket.data.userId);
-    if (!participant || !canControlPlayback(participant)) {
+    if (
+      !participant
+      || participant.socketId !== socket.id
+      || socket.data.roomId !== room.roomId
+      || !canControlPlayback(participant)
+    ) {
       socket.emit('error', { message: 'You do not have permission to seek.' });
       return;
     }
@@ -443,7 +655,12 @@ io.on('connection', (socket) => {
     }
 
     const participant = roomManager.getParticipant(room.roomId, socket.data.userId);
-    if (!participant || !canControlPlayback(participant)) {
+    if (
+      !participant
+      || participant.socketId !== socket.id
+      || socket.data.roomId !== room.roomId
+      || !canControlPlayback(participant)
+    ) {
       socket.emit('error', { message: 'You do not have permission to change the video.' });
       return;
     }
@@ -467,7 +684,12 @@ io.on('connection', (socket) => {
     }
 
     const caller = roomManager.getParticipant(room.roomId, socket.data.userId);
-    if (!caller || !canManageParticipants(caller)) {
+    if (
+      !caller
+      || caller.socketId !== socket.id
+      || socket.data.roomId !== room.roomId
+      || !canManageParticipants(caller)
+    ) {
       socket.emit('error', { message: 'Only the host can manage roles.' });
       return;
     }
@@ -505,7 +727,12 @@ io.on('connection', (socket) => {
     }
 
     const caller = roomManager.getParticipant(room.roomId, socket.data.userId);
-    if (!caller || !canManageParticipants(caller)) {
+    if (
+      !caller
+      || caller.socketId !== socket.id
+      || socket.data.roomId !== room.roomId
+      || !canManageParticipants(caller)
+    ) {
       socket.emit('error', { message: 'Only the host can remove participants.' });
       return;
     }
@@ -686,6 +913,7 @@ io.on('connection', (socket) => {
   });
 
   socket.on('disconnect', () => {
+    clearTimeout(authExpiryTimer);
     const pendingRoomId = socket.data.pendingRejoinRoomId;
     const pendingUserId = socket.data.pendingRejoinUserId;
     if (pendingRoomId && pendingUserId) {
@@ -740,7 +968,11 @@ server.on('error', (error) => {
 });
 
 async function startServer() {
+  if (process.env.NODE_ENV === 'production' && clientUrls.size === 0) {
+    throw new Error('CLIENT_URL must contain the deployed frontend origin in production.');
+  }
   const roomsCollection = await connectToMongo();
+  await Promise.all([User.init(), AuthSession.init()]);
   await roomManager.initialize(roomsCollection);
   console.log(`Loaded ${roomManager.rooms.size} saved room(s).`);
 

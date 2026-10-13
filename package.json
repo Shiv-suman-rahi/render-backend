@@ -7,7 +7,7 @@
     "dev": "nodemon src/server.js",
     "start": "node src/server.js",
     "seed": "node scripts/seed.js",
-    "test": "echo \"No backend tests configured yet\""
+    "test": "node --test"
   },
   "keywords": [],
   "type": "commonjs",
