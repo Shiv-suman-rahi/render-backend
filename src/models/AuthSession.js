@@ -16,6 +16,7 @@ const authSessionSchema = new mongoose.Schema(
     csrfToken: {
       type: String,
       required: true,
+      unique: true,
     },
     expiresAt: {
       type: Date,

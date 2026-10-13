@@ -17,6 +17,7 @@ const {
   createSession,
   hashPassword,
   resolveSession,
+  resolveSocketSession,
   serializeUser,
   validateCsrf,
   verifyPassword,
@@ -49,7 +50,7 @@ const corsOptions = {
 };
 
 app.use(cors(corsOptions));
-app.use(express.json());
+app.use(express.json({ limit: '256kb' }));
 
 const roomManager = new RoomManager();
 const pendingRejoinRequests = new Map();
@@ -209,20 +210,31 @@ app.patch('/api/users/me', requireAuth, requireTrustedOrigin, requireCsrf, async
   }
   if (Object.hasOwn(req.body || {}, 'avatarUrl')) {
     const avatarUrl = typeof req.body.avatarUrl === 'string' ? req.body.avatarUrl.trim() : '';
+    const isDataUrl = avatarUrl.startsWith('data:');
     if (avatarUrl) {
-      try {
-        if (new URL(avatarUrl).protocol !== 'https:') throw new Error('Unsupported URL scheme.');
-      } catch {
-        return res.status(400).json({ message: 'Avatar must be a valid HTTPS image URL.' });
+      if (isDataUrl) {
+        const match = /^data:image\/(jpeg|png|webp);base64,([A-Za-z0-9+/]+={0,2})$/.exec(avatarUrl);
+        if (!match || Buffer.from(match[2], 'base64').toString('base64') !== match[2]) {
+          return res.status(400).json({ message: 'Avatar must be a valid JPG, PNG, or WebP image.' });
+        }
+      } else {
+        try {
+          if (new URL(avatarUrl).protocol !== 'https:') throw new Error('Unsupported URL scheme.');
+        } catch {
+          return res.status(400).json({ message: 'Avatar must be a valid HTTPS image URL.' });
+        }
       }
     }
-    if (avatarUrl.length > 2048) {
+    if (isDataUrl && avatarUrl.length > 240 * 1024) {
+      return res.status(400).json({ message: 'Avatar image is too large.' });
+    }
+    if (!isDataUrl && avatarUrl.length > 2048) {
       return res.status(400).json({ message: 'Avatar URL is too long.' });
     }
     updates.avatarUrl = avatarUrl;
   }
   if (Object.keys(updates).length === 0) {
-    return res.status(400).json({ message: 'Provide a username or avatar URL to update.' });
+    return res.status(400).json({ message: 'Provide a username or profile photo to update.' });
   }
 
   try {
@@ -280,7 +292,8 @@ io.use(async (socket, next) => {
     if (!origin || !clientUrls.has(origin)) {
       return next(new Error('Origin is not allowed.'));
     }
-    const auth = await resolveSession(socket.handshake.headers.cookie);
+    const auth = await resolveSession(socket.handshake.headers.cookie)
+      || await resolveSocketSession(socket.handshake.auth?.csrfToken);
     if (!auth) return next(new Error('Authentication required.'));
     socket.data.user = auth.user;
     socket.data.authSessionId = String(auth.session._id);

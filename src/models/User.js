@@ -36,7 +36,7 @@ const userSchema = new mongoose.Schema(
     avatarUrl: {
       type: String,
       default: '',
-      maxlength: 2048,
+      maxlength: 240 * 1024,
     },
     lastSeen: {
       type: Date,

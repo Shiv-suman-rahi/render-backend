@@ -93,6 +93,24 @@ async function resolveSession(cookieHeader) {
   return { session, user };
 }
 
+async function resolveSocketSession(csrfToken) {
+  if (typeof csrfToken !== 'string' || !csrfToken) return null;
+
+  const session = await AuthSession.findOne({
+    csrfToken,
+    expiresAt: { $gt: new Date() },
+  });
+  if (!session) return null;
+
+  const user = await User.findById(session.userId);
+  if (!user) {
+    await AuthSession.deleteOne({ _id: session._id });
+    return null;
+  }
+
+  return { session, user };
+}
+
 async function hashPassword(password) {
   const salt = crypto.randomBytes(16);
   const derived = await scrypt(password, salt, 64);
@@ -127,6 +145,7 @@ module.exports = {
   hashPassword,
   hashToken,
   resolveSession,
+  resolveSocketSession,
   serializeUser,
   validateCsrf,
   verifyPassword,
