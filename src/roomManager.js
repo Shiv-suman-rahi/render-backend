@@ -15,11 +15,12 @@ function normalizeRole(role) {
 }
 
 class Participant {
-  constructor(userId, username, socketId, role = ROLE_TYPES.PARTICIPANT) {
+  constructor(userId, username, socketId, role = ROLE_TYPES.PARTICIPANT, avatarUrl = '') {
     this.userId = userId;
     this.username = username;
     this.socketId = socketId;
     this.role = normalizeRole(role);
+    this.avatarUrl = avatarUrl;
     this.connectedAt = new Date().toISOString();
   }
 
@@ -27,6 +28,7 @@ class Participant {
     return {
       userId: this.userId,
       username: this.username,
+      avatarUrl: this.avatarUrl,
       role: this.role,
       connectedAt: this.connectedAt,
       online: Boolean(this.socketId),
@@ -154,6 +156,7 @@ class RoomManager {
           savedParticipant.username,
           null,
           savedParticipant.role,
+          savedParticipant.avatarUrl || '',
         );
         participant.connectedAt = savedParticipant.connectedAt;
         room.addParticipant(participant);
@@ -196,6 +199,7 @@ class RoomManager {
         document.participants = document.participants.map((participant) => ({
           userId: participant.userId,
           username: participant.username,
+          avatarUrl: participant.avatarUrl || '',
           role: participant.role,
           connectedAt: participant.connectedAt,
         }));
@@ -236,14 +240,14 @@ class RoomManager {
     return code;
   }
 
-  createRoom({ username, socketId, userId }) {
+  createRoom({ username, socketId, userId, avatarUrl = '' }) {
     let roomId = this.generateRoomCode();
     while (this.rooms.has(roomId) || this.closedRooms.has(roomId)) {
       roomId = this.generateRoomCode();
     }
 
     const hostId = userId || this.createUserId();
-    const host = new Participant(hostId, username, socketId, ROLE_TYPES.HOST);
+    const host = new Participant(hostId, username, socketId, ROLE_TYPES.HOST, avatarUrl);
     const room = new Room(roomId, hostId);
     room.addParticipant(host);
     this.rooms.set(roomId, room);
@@ -259,14 +263,14 @@ class RoomManager {
     return this.rooms.get(roomId) || null;
   }
 
-  addParticipant(roomId, username, socketId, userId) {
+  addParticipant(roomId, username, socketId, userId, avatarUrl = '') {
     const room = this.getRoom(roomId);
     if (!room) {
       throw new Error('Room not found');
     }
 
     const participantId = userId || this.createUserId();
-    const participant = new Participant(participantId, username, socketId, ROLE_TYPES.PARTICIPANT);
+    const participant = new Participant(participantId, username, socketId, ROLE_TYPES.PARTICIPANT, avatarUrl);
     room.addParticipant(participant);
     this.persistRoom(roomId);
     return participant;

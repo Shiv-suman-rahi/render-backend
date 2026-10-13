@@ -211,7 +211,8 @@ app.patch('/api/users/me', requireAuth, requireTrustedOrigin, requireCsrf, async
   if (Object.hasOwn(req.body || {}, 'avatarUrl')) {
     const avatarUrl = typeof req.body.avatarUrl === 'string' ? req.body.avatarUrl.trim() : '';
     const isDataUrl = avatarUrl.startsWith('data:');
-    if (avatarUrl) {
+    const isPresetAvatar = /^preset:(fox|panda|cat|frog|tiger|koala|octopus|unicorn)$/.test(avatarUrl);
+    if (avatarUrl && !isPresetAvatar) {
       if (isDataUrl) {
         const match = /^data:image\/(jpeg|png|webp);base64,([A-Za-z0-9+/]+={0,2})$/.exec(avatarUrl);
         if (!match || Buffer.from(match[2], 'base64').toString('base64') !== match[2]) {
@@ -243,11 +244,14 @@ app.patch('/api/users/me', requireAuth, requireTrustedOrigin, requireCsrf, async
       runValidators: true,
     });
     if (!user) return res.status(401).json({ message: 'Please sign in to continue.' });
-    if (updates.username) {
+    if (updates.username || updates.avatarUrl !== undefined) {
       for (const room of roomManager.rooms.values()) {
         const participant = room.getParticipant(String(user._id));
         if (participant) {
           participant.username = user.username;
+          if (updates.avatarUrl !== undefined) {
+            participant.avatarUrl = user.avatarUrl || '';
+          }
           await roomManager.persistRoom(room.roomId, { throwOnError: true });
           emitRoomState(io, room.roomId);
         }
@@ -267,7 +271,12 @@ app.get('/api/health', (req, res) => {
 app.post('/api/rooms', requireAuth, requireTrustedOrigin, requireCsrf, async (req, res) => {
   const username = req.user.username;
   const userId = String(req.user._id);
-  const { room, participant } = roomManager.createRoom({ username, userId, socketId: null });
+  const { room, participant } = roomManager.createRoom({
+    username,
+    userId,
+    socketId: null,
+    avatarUrl: req.user.avatarUrl || '',
+  });
   try {
     await roomManager.persistRoom(room.roomId, { throwOnError: true });
 
@@ -393,12 +402,19 @@ io.on('connection', (socket) => {
       }
 
       participant = room.getParticipantBySocketId(socket.id)
-        || roomManager.addParticipant(cleanRoomId, cleanUsername, socket.id, cleanUserId);
+        || roomManager.addParticipant(
+          cleanRoomId,
+          cleanUsername,
+          socket.id,
+          cleanUserId,
+          socket.data.user.avatarUrl || '',
+        );
     }
 
     if (participant.username !== cleanUsername) {
       participant.username = cleanUsername;
     }
+    participant.avatarUrl = socket.data.user.avatarUrl || '';
 
     try {
       await roomManager.persistRoom(cleanRoomId, { throwOnError: true });
@@ -460,7 +476,13 @@ io.on('connection', (socket) => {
 
     roomRequests.delete(cleanUserId);
     room.bannedUserIds.delete(cleanUserId);
-    const participant = roomManager.addParticipant(cleanRoomId, request.username, requesterSocket.id, cleanUserId);
+    const participant = roomManager.addParticipant(
+      cleanRoomId,
+      request.username,
+      requesterSocket.id,
+      cleanUserId,
+      requesterSocket.data.user.avatarUrl || '',
+    );
     try {
       await roomManager.persistRoom(cleanRoomId, { throwOnError: true });
     } catch (error) {
@@ -626,6 +648,7 @@ io.on('connection', (socket) => {
       roomId: cleanRoomId,
       userId: participant.userId,
       username: participant.username,
+      avatarUrl: participant.avatarUrl,
       role: participant.role,
       text: cleanText,
       type: cleanType,
