@@ -117,10 +117,18 @@ Example configuration:
 ```env
 PORT=3000
 MONGODB_URI=your_mongodb_connection_string
-FRONTEND_URL=https://vercel-frontend-lkjj.vercel.app
+MONGODB_DB=watch_party
+CLIENT_URL=https://your-frontend.vercel.app
+SMTP_HOST=your-smtp-host
+SMTP_PORT=587
+SMTP_USER=your-smtp-username
+SMTP_PASS=your-smtp-password
+SMTP_FROM=Watch Party <verified-sender@example.com>
 ```
 
-**Important:** This is an illustrative example, not a verified list of required variables. Check the backend source code and existing deployment settings for the exact variable names. If the application uses a frontend-origin allowlist, such as `clientUrls`, configure it according to the actual implementation.
+Email verification is required before account creation. Configure SMTP credentials and a verified sender address in Render's environment settings (and in `.env` for local development). `SMTP_SECURE` is optional; port 465 enables TLS automatically, while port 587 uses STARTTLS. Signup email delivery returns an error if SMTP is not configured or delivery fails; it never creates an unverified account.
+
+Signup codes are six digits, expire after 10 minutes, and allow at most five incorrect attempts. Pending signup records are stored temporarily in `pendingsignups` and removed after verification or expiration.
 
 Never commit `.env` files, database credentials, authentication secrets, or other sensitive configuration to GitHub.
 
