@@ -15,7 +15,7 @@ const User = require('./models/User');
 const AuthSession = require('./models/AuthSession');
 const Profile = require('./models/Profile');
 const PendingSignup = require('./models/PendingSignup');
-const { sendVerificationCode } = require('./email');
+const { getEmailDeliveryErrorMessage, sendVerificationCode } = require('./email');
 const {
   generateVerificationCode,
   hashVerificationCode,
@@ -185,8 +185,12 @@ app.post('/api/auth/register/request-code', rateLimit({ limit: 3, windowMs: 15 *
     if (error.name === 'ValidationError') {
       return res.status(400).json({ message: 'Please check your account details and try again.' });
     }
-    console.error('Failed to send signup verification code:', error);
-    return res.status(503).json({ message: 'Unable to send a verification code right now. Please try again later.' });
+    console.error('Failed to send signup verification code:', {
+      code: error.code,
+      responseCode: error.responseCode,
+      command: error.command,
+    });
+    return res.status(503).json({ message: getEmailDeliveryErrorMessage(error) });
   }
 });
 

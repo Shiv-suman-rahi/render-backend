@@ -128,6 +128,8 @@ SMTP_FROM=Watch Party <verified-sender@example.com>
 
 Email verification is required before account creation. Configure SMTP credentials and a verified sender address in Render's environment settings (and in `.env` for local development). `SMTP_SECURE` is optional; port 465 enables TLS automatically, while port 587 uses STARTTLS. Signup email delivery returns an error if SMTP is not configured or delivery fails; it never creates an unverified account.
 
+For Gmail SMTP, set `SMTP_HOST=smtp.gmail.com`, `SMTP_PORT=465`, `SMTP_SECURE=true`, `SMTP_USER` to the full Gmail address, and `SMTP_PASS` to a Google App Password generated after enabling 2-Step Verification. Do not use the normal Gmail account password. Set `SMTP_FROM` to that same Gmail address or another sender authorized by the account. Configure the values both in the local backend `.env` and in Render's backend environment; local values are not deployed.
+
 Signup codes are six digits, expire after 10 minutes, and allow at most five incorrect attempts. Pending signup records are stored temporarily in `pendingsignups` and removed after verification or expiration.
 
 Never commit `.env` files, database credentials, authentication secrets, or other sensitive configuration to GitHub.
