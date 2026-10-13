@@ -6,7 +6,6 @@ const userSchema = new mongoose.Schema(
     userId: {
       type: String,
       unique: true,
-      sparse: true,
       default: () => randomUUID(),
     },
     username: {
