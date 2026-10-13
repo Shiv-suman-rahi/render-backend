@@ -1,78 +1,118 @@
 # YouTube Watch Party System — Backend
 
-A backend service for the **YouTube Watch Party System**, a web application designed to let users create or join watch rooms and enjoy YouTube videos together.
+A real-time backend service for the **YouTube Watch Party System**, a web application designed to let multiple users join a shared room and watch YouTube videos together.
 
-The backend handles server-side operations, room management, client-server communication, and database integration. It is designed to work with the separately deployed frontend.
+The backend provides HTTP APIs, room-related operations, and real-time communication using Node.js, Express.js, and Socket.IO. It is designed to work with a separately deployed frontend.
 
-## 🚀 Project Overview
+## Overview
 
-The YouTube Watch Party System aims to provide a shared video-watching experience where users can join a common room and watch YouTube videos together.
+The YouTube Watch Party System aims to make watching YouTube videos with friends easier by allowing users to create or join a shared room and synchronize playback.
 
-This repository contains the backend application responsible for processing requests from the frontend and supporting the application's room-based functionality.
+This repository contains the backend responsible for handling client requests and coordinating communication between connected participants.
 
-## ✨ Key Features
+**Backend repository:** [render-backend](https://github.com/Shiv-suman-rahi/render-backend)
+**Frontend repository:** [versel-frontend](https://github.com/Shiv-suman-rahi/versel-frontend)
+**Live frontend:** [YouTube Watch Party System](https://vercel-frontend-lkjj.vercel.app/)
 
-* **Room Management:** Supports creating and joining watch rooms.
-* **Unique Room Codes:** Enables users to identify and access specific rooms.
-* **Real-Time Communication:** Supports synchronized communication between connected participants through Socket.IO, where implemented.
+> **Note:** Replace or correct the frontend repository link if its actual GitHub name differs.
+
+## Features
+
+* **Room Management:** Supports room creation and joining, subject to the implemented backend routes and event handlers.
+* **Room Codes:** Uses room identifiers to help participants access shared watch rooms.
+* **Real-Time Communication:** Uses Socket.IO for event-based communication between the server and connected clients.
+* **Playback Synchronization:** Supports synchronization-related events where implemented in the server and frontend.
 * **REST API:** Provides HTTP endpoints for frontend-backend communication.
-* **Database Integration:** Supports persistent storage through MongoDB, when configured.
-* **Frontend Integration:** Designed to communicate with the separately deployed frontend.
-* **Cloud Deployment:** Backend hosted on Render.
+* **Frontend Integration:** Designed to communicate with a separately deployed frontend.
+* **Cloud Deployment:** Backend deployment is configured through Render.
 
-## 🛠️ Tech Stack
+**Implementation note:** Persistent user accounts, authentication, authorization, and database-backed room history should only be listed as available features after the corresponding functionality has been implemented and tested.
 
-* **Runtime:** Node.js
-* **Backend Framework:** Express.js
-* **Real-Time Communication:** Socket.IO
-* **Database:** MongoDB
-* **Database ODM:** Mongoose, if used in the application
-* **Deployment:** Render
-* **Version Control:** Git and GitHub
+## Technology Stack
 
-## 📁 Project Structure
+| Technology     | Purpose                                 |
+| -------------- | --------------------------------------- |
+| Node.js        | JavaScript runtime for the backend      |
+| Express.js     | HTTP server and API routing             |
+| Socket.IO      | Real-time, event-based communication    |
+| MongoDB        | Database integration, where configured  |
+| Mongoose       | MongoDB object modeling, if used        |
+| Git and GitHub | Version control and source-code hosting |
+| Render         | Backend hosting                         |
+
+## Project Structure
+
+The following is an illustrative structure. Confirm the actual files and folders in the repository before treating it as an exact directory listing.
 
 ```text
 render-backend/
 ├── src/
-│   └── server.js        # Application entry point, if configured here
-├── scripts/             # Utility and project scripts
-├── package.json         # Dependencies and npm scripts
-├── package-lock.json    # Dependency lock file
-├── .gitignore           # Git exclusion rules
-└── README.md            # Project documentation
+│   └── server.js
+├── scripts/
+├── package.json
+├── package-lock.json
+├── .gitignore
+└── README.md
 ```
 
-The exact files and responsibilities may vary according to the current implementation.
+The application entry point, room-management modules, database models, and utility files may vary according to the current implementation.
 
-## ⚙️ Getting Started
+## How It Works
 
-### 1. Prerequisites
+The general client-server flow is:
 
-Install the following before running the project:
+1. A user opens the frontend application.
+2. The frontend sends an HTTP request or establishes a Socket.IO connection to the backend.
+3. The backend validates and processes the incoming request or event.
+4. For room-related operations, the backend handles the relevant room logic.
+5. Connected participants receive real-time updates when the corresponding events are implemented.
+6. The frontend updates the room interface and video player based on the received information.
 
-* Node.js and npm
-* Git
-* MongoDB connection string, if database integration is enabled
+### HTTP and Real-Time Communication
 
-### 2. Clone the Repository
+**HTTP / REST API:** Used for request-response operations such as room-related API calls.
+
+**Socket.IO:** Used for event-based communication, allowing the server and connected clients to exchange updates without repeatedly polling an HTTP endpoint.
+
+Socket.IO can use WebSocket as its transport and can fall back to HTTP long-polling when appropriate. It is not limited to WebSocket in every connection.
+
+### Room State and Persistence
+
+The backend's room-management implementation should be documented according to how state is stored.
+
+If `RoomManager` uses an in-memory JavaScript `Map`, that room state exists in the running Node.js process and is not automatically persisted to MongoDB. Such state can be lost when the process restarts.
+
+MongoDB persistence should only be claimed for the specific data that is actually saved through database models and operations.
+
+## Prerequisites
+
+Before running the backend locally, install:
+
+* [Node.js](https://nodejs.org/)
+* npm, included with Node.js
+* [Git](https://git-scm.com/)
+* MongoDB connection details, if required by the application
+
+## Installation and Setup
+
+### 1. Clone the Repository
 
 ```bash
 git clone https://github.com/Shiv-suman-rahi/render-backend.git
 cd render-backend
 ```
 
-### 3. Install Dependencies
+### 2. Install Dependencies
 
 ```bash
 npm install
 ```
 
-### 4. Configure Environment Variables
+### 3. Configure Environment Variables
 
-Create a `.env` file in the project root and configure the variables required by your application.
+Create a `.env` file in the project root if the application uses environment variables.
 
-Example:
+Example configuration:
 
 ```env
 PORT=3000
@@ -80,69 +120,121 @@ MONGODB_URI=your_mongodb_connection_string
 FRONTEND_URL=https://vercel-frontend-lkjj.vercel.app
 ```
 
-Use the exact environment-variable names expected by your source code. If the project uses a different variable name for the database URI or frontend origin, update the example accordingly.
+**Important:** This is an illustrative example, not a verified list of required variables. Check the backend source code and existing deployment settings for the exact variable names. If the application uses a frontend-origin allowlist, such as `clientUrls`, configure it according to the actual implementation.
 
-**Important:** Never commit your `.env` file, database credentials, or other secrets to GitHub.
+Never commit `.env` files, database credentials, authentication secrets, or other sensitive configuration to GitHub.
 
-### 5. Run the Backend
+### 4. Start the Backend
 
-Use the script defined in `package.json`. For example:
+Use the command defined in `package.json`.
+
+For example, if a development script is available:
 
 ```bash
 npm run dev
 ```
 
-If a development script is not configured, check the available scripts in `package.json` and use the appropriate command.
+For production, use the actual start script defined by the project:
 
-Once the server starts, it should listen on the configured port.
+```bash
+npm start
+```
 
-## 🌐 Deployment on Render
+These commands work only if the corresponding scripts are configured in `package.json`.
 
-The backend can be deployed using Render.
+### 5. Verify the Server
 
-1. Sign in to your Render account.
+After starting the backend, check the terminal output for successful startup.
+
+If a health-check endpoint is implemented, open its configured URL to verify that the server responds. Otherwise, test an existing API endpoint using a browser or an API client such as Postman.
+
+## Deployment on Render
+
+The backend is intended to run as a deployed web service on Render.
+
+General deployment procedure:
+
+1. Sign in to [Render](https://render.com/).
 2. Create a new Web Service.
-3. Connect your GitHub repository: `Shiv-suman-rahi/render-backend`.
-4. Configure the build command as `npm install`.
-5. Configure the start command according to the scripts in `package.json`, such as `npm start`, if available.
-6. Add the required environment variables in Render's environment settings.
-7. Deploy the service and verify that the server starts successfully.
+3. Connect the `render-backend` GitHub repository.
+4. Configure the build command according to the project, commonly `npm install`.
+5. Set the start command to the production script defined in `package.json`.
+6. Add the required environment variables through the Render dashboard.
+7. Deploy the service and review its logs.
+8. Test the deployed API and Socket.IO connection.
 
-Use Render's assigned public URL when configuring the frontend.
+Use the actual public Render service URL when configuring the frontend. The URL and available endpoints should be documented after verifying the deployed service.
 
-## 🔗 Frontend Integration
+## Frontend Integration
 
-The backend is intended to work with the separately deployed frontend.
+The backend and frontend must be configured to communicate with each other.
 
-* **Frontend repository:** [versel-frontend](https://github.com/Shiv-suman-rahi/versel-frontend)
-* **Live frontend:** [YouTube Watch Party System](https://vercel-frontend-lkjj.vercel.app/)
-* **Backend repository:** [render-backend](https://github.com/Shiv-suman-rahi/render-backend)
-* **Backend hosting:** Render
+For deployment:
 
-For successful integration, configure the frontend to use the deployed backend URL instead of a local development URL such as `http://localhost:3000`.
+* Configure the frontend to use the deployed backend URL instead of a local URL such as `http://localhost:3000`.
+* Configure Express CORS to permit requests from the intended frontend origin.
+* Configure Socket.IO CORS separately where required.
+* Use HTTPS for production HTTP requests and secure transport for real-time connections.
+* Ensure that any credentials or authentication tokens are handled according to the application's security design.
 
-Ensure that CORS allows requests from the deployed frontend origin. If Socket.IO is used, configure its CORS settings as well.
+If the frontend is deployed on Vercel and the backend on Render, verify that both deployments use the correct production URLs and environment variables.
 
-## 🔒 Security Considerations
+## Security Considerations
 
-* Keep database credentials and secrets in environment variables.
-* Restrict CORS to trusted frontend origins in production.
-* Validate incoming requests and room-related input.
-* Avoid exposing sensitive server configuration in API responses.
-* Use HTTPS for production communication.
+* Store credentials and secrets in environment variables.
+* Restrict CORS to trusted origins in production.
+* Validate request bodies, query parameters, room identifiers, and other user input.
+* Handle invalid requests and unexpected server errors safely.
+* Apply authentication and authorization to protected operations if supported.
+* Avoid exposing database credentials or internal server details in API responses.
+* Use HTTPS in production.
+* Configure appropriate access controls before introducing persistent user accounts or private rooms.
 
-## 🎯 Project Objective
+## Troubleshooting
 
-The objective of this project is to build a backend that supports an interactive, room-based YouTube watching experience using modern web development technologies and cloud deployment.
+### Frontend Still Uses the Local Backend
 
-## 👨‍💻 Author
+Check the frontend's API base URL and Socket.IO connection URL. Confirm that the production environment variables point to the deployed backend, then rebuild and redeploy the frontend.
+
+### CORS Errors
+
+Verify that the deployed frontend origin is included in the backend's CORS configuration. Check the Socket.IO server configuration separately.
+
+### MongoDB Connection Failure
+
+Verify the connection string, database access permissions, network access settings, and the backend's environment variables.
+
+### Room State Is Lost After Restart
+
+If room state is stored only in an in-memory `Map`, a server restart clears that state. Persistent room storage requires an appropriate database implementation.
+
+### Socket.IO Connection Failure
+
+Check the deployed server URL, client connection configuration, CORS settings, and server logs. Confirm that the backend and frontend agree on the event names and payload formats.
+
+## Future Improvements
+
+Potential enhancements, depending on the current implementation, include:
+
+* User registration, login, and secure authentication.
+* Persistent user profiles using MongoDB.
+* Database-backed room history and saved preferences.
+* Stronger room access controls and participant permissions.
+* Improved reconnect handling and playback-state recovery.
+* Automated tests for API endpoints and Socket.IO events.
+* API documentation and structured server logging.
+
+These items are suggestions for future development, not claims that the features are already implemented.
+
+## Author
 
 **Shiv Suman Rahi**
 
 B.Tech — Computer Science (Data Science)
 
-GitHub: [Shiv-suman-rahi](https://github.com/Shiv-suman-rahi)
+* GitHub: [Shiv-suman-rahi](https://github.com/Shiv-suman-rahi)
+* Project: YouTube Watch Party System
 
 ---
 
-*Part of the YouTube Watch Party System project.*
+*Built as a full-stack development project to explore backend APIs, real-time communication, room management, and cloud deployment.*
