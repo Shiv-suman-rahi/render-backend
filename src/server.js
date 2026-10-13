@@ -14,13 +14,6 @@ const { connectToMongo, closeMongoConnection } = require('./database');
 const User = require('./models/User');
 const AuthSession = require('./models/AuthSession');
 const Profile = require('./models/Profile');
-const PendingSignup = require('./models/PendingSignup');
-const { getEmailDeliveryErrorMessage, sendVerificationCode } = require('./email');
-const {
-  generateVerificationCode,
-  hashVerificationCode,
-  verifyVerificationCode,
-} = require('./verificationCode');
 const {
   clearSessionCookie,
   createSession,
@@ -133,7 +126,7 @@ function requireCsrf(req, res, next) {
   return next();
 }
 
-app.post('/api/auth/register/request-code', rateLimit({ limit: 3, windowMs: 15 * 60 * 1000 }), requireTrustedOrigin, async (req, res) => {
+app.post('/api/auth/register', rateLimit({ limit: 3, windowMs: 15 * 60 * 1000 }), requireTrustedOrigin, async (req, res) => {
   const username = typeof req.body?.username === 'string' ? req.body.username.trim() : '';
   const email = typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase() : '';
   const password = typeof req.body?.password === 'string' ? req.body.password : '';
@@ -153,89 +146,9 @@ app.post('/api/auth/register/request-code', rateLimit({ limit: 3, windowMs: 15 *
       return res.status(409).json({ message: 'An account with this email already exists.' });
     }
 
-    const code = generateVerificationCode();
-    const codeSalt = crypto.randomBytes(16).toString('hex');
-    const codeHash = hashVerificationCode(codeSalt, code);
     const passwordHash = await hashPassword(password);
-    await PendingSignup.findOneAndUpdate(
-      { email },
-      {
-        $set: {
-          username,
-          passwordHash,
-          codeSalt,
-          codeHash,
-          attempts: 0,
-          expiresAt: new Date(Date.now() + 10 * 60 * 1000),
-        },
-      },
-      { upsert: true, new: true, runValidators: true, setDefaultsOnInsert: true },
-    );
-    try {
-      await sendVerificationCode(email, code);
-    } catch (error) {
-      await PendingSignup.deleteOne({ email, codeHash });
-      throw error;
-    }
-    return res.json({ message: 'A verification code has been sent to your email address.' });
-  } catch (error) {
-    if (error.code === 11000 && (error.keyPattern?.email || error.keyValue?.email)) {
-      return res.status(409).json({ message: 'An account with this email already exists.' });
-    }
-    if (error.name === 'ValidationError') {
-      return res.status(400).json({ message: 'Please check your account details and try again.' });
-    }
-    console.error('Failed to send signup verification code:', {
-      code: error.code,
-      responseCode: error.responseCode,
-      command: error.command,
-    });
-    return res.status(503).json({ message: getEmailDeliveryErrorMessage(error) });
-  }
-});
-
-app.post('/api/auth/register/verify', rateLimit({ limit: 8, windowMs: 15 * 60 * 1000 }), requireTrustedOrigin, async (req, res) => {
-  const email = typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase() : '';
-  const code = typeof req.body?.code === 'string' ? req.body.code.trim() : '';
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || !/^\d{6}$/.test(code)) {
-    return res.status(400).json({ message: 'Enter a valid email and six-digit verification code.' });
-  }
-
-  try {
-    const pending = await PendingSignup.findOne({
-      email,
-      expiresAt: { $gt: new Date() },
-    });
-    if (!pending) {
-      return res.status(400).json({ message: 'That verification code has expired. Request a new code.' });
-    }
-
-    if (!verifyVerificationCode(pending.codeSalt, code, pending.codeHash)) {
-      const updatedPending = await PendingSignup.findOneAndUpdate(
-        { _id: pending._id, codeHash: pending.codeHash },
-        { $inc: { attempts: 1 } },
-        { new: true },
-      );
-      if (updatedPending && updatedPending.attempts >= 5) {
-        await PendingSignup.deleteOne({ _id: pending._id });
-        return res.status(429).json({ message: 'Too many incorrect codes. Request a new verification code.' });
-      }
-      return res.status(400).json({ message: 'The verification code is incorrect.' });
-    }
-
-    if (await User.exists({ email })) {
-      await PendingSignup.deleteOne({ _id: pending._id });
-      return res.status(409).json({ message: 'An account with this email already exists.' });
-    }
-
-    const user = await User.create({
-      username: pending.username,
-      email: pending.email,
-      passwordHash: pending.passwordHash,
-      avatarUrl: '',
-    });
+    const user = await User.create({ username, email, passwordHash, avatarUrl: '' });
     await syncProfile(user);
-    await PendingSignup.deleteOne({ _id: pending._id });
     const { csrfToken } = await createSession(user, res);
     return res.status(201).json({ user: serializeUser(user), csrfToken });
   } catch (error) {
@@ -245,7 +158,7 @@ app.post('/api/auth/register/verify', rateLimit({ limit: 8, windowMs: 15 * 60 * 
     if (error.name === 'ValidationError') {
       return res.status(400).json({ message: 'Please check your account details and try again.' });
     }
-    console.error('Failed to verify signup code:', error);
+    console.error('Failed to register account:', error);
     return res.status(500).json({ message: 'Unable to create your account right now.' });
   }
 });
@@ -1105,7 +1018,7 @@ async function startServer() {
     throw new Error('CLIENT_URL must contain the deployed frontend origin in production.');
   }
   const roomsCollection = await connectToMongo();
-  await Promise.all([User.init(), AuthSession.init(), Profile.init(), PendingSignup.init()]);
+  await Promise.all([User.init(), AuthSession.init(), Profile.init()]);
   await backfillProfiles();
   await roomManager.initialize(roomsCollection);
   console.log(`Loaded ${roomManager.rooms.size} saved room(s).`);

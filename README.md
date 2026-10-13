@@ -119,27 +119,9 @@ PORT=3000
 MONGODB_URI=your_mongodb_connection_string
 MONGODB_DB=watch_party
 CLIENT_URL=https://your-frontend.vercel.app
-SMTP_HOST=your-smtp-host
-SMTP_PORT=587
-SMTP_USER=your-smtp-username
-SMTP_PASS=your-smtp-password
-SMTP_FROM=Watch Party <verified-sender@example.com>
 ```
 
-Email verification is required before account creation. Configure either Resend (`RESEND_API_KEY` and a verified `SMTP_FROM`) or SMTP credentials and an authorized `SMTP_FROM`. Local development can use `.env`. `SMTP_SECURE` is optional for SMTP; port 465 enables TLS automatically, while port 587 uses STARTTLS. Signup email delivery returns an error if the selected provider is not configured or delivery fails; it never creates an unverified account.
-
-For Resend, the backend environment only needs:
-
-```env
-RESEND_API_KEY=re_your_api_key
-SMTP_FROM=Watch Party <verify@your-verified-domain.com>
-```
-
-For Gmail SMTP, set `SMTP_HOST=smtp.gmail.com`, `SMTP_PORT=465`, `SMTP_SECURE=true`, `SMTP_USER` to the full Gmail address, and `SMTP_PASS` to a Google App Password generated after enabling 2-Step Verification. Do not use the normal Gmail account password. Set `SMTP_FROM` to that same Gmail address or another sender authorized by the account. Configure the values both in the local backend `.env` and in Render's backend environment; local values are not deployed.
-
-**Render Free services block outbound SMTP ports 25, 465, and 587.** For signup email on Render Free, configure the Resend values above in the backend service's Environment settings. The backend uses Resend's HTTPS API whenever `RESEND_API_KEY` is set; otherwise it uses SMTP. Do not put the Resend API key in the frontend or commit it to Git.
-
-Signup codes are six digits, expire after 10 minutes, and allow at most five incorrect attempts. Pending signup records are stored temporarily in `pendingsignups` and removed after verification or expiration.
+Signup creates the user and profile immediately and signs the user in. No email provider configuration is required.
 
 Never commit `.env` files, database credentials, authentication secrets, or other sensitive configuration to GitHub.
 
