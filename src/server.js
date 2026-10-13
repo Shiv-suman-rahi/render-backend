@@ -12,6 +12,7 @@ const { canControlPlayback, canManageParticipants } = require('./permissions');
 const { connectToMongo, closeMongoConnection } = require('./database');
 const User = require('./models/User');
 const AuthSession = require('./models/AuthSession');
+const Profile = require('./models/Profile');
 const {
   clearSessionCookie,
   createSession,
@@ -146,6 +147,7 @@ app.post('/api/auth/register', rateLimit({ limit: 8, windowMs: 15 * 60 * 1000 })
       passwordHash: await hashPassword(password),
       avatarUrl: '',
     });
+    await syncProfile(user);
     const { csrfToken } = await createSession(user, res);
     return res.status(201).json({ user: serializeUser(user), csrfToken });
   } catch (error) {
@@ -172,6 +174,7 @@ app.post('/api/auth/login', rateLimit({ limit: 8, windowMs: 15 * 60 * 1000 }), r
     if (!user || !await verifyPassword(password, user.passwordHash)) {
       return res.status(401).json({ message: 'Invalid email or password.' });
     }
+    await syncProfile(user);
     const { csrfToken } = await createSession(user, res);
     return res.json({ user: serializeUser(user), csrfToken });
   } catch (error) {
@@ -181,7 +184,12 @@ app.post('/api/auth/login', rateLimit({ limit: 8, windowMs: 15 * 60 * 1000 }), r
 });
 
 app.get('/api/auth/me', requireAuth, (req, res) => {
-  res.json({ user: serializeUser(req.user), csrfToken: req.authSession.csrfToken });
+  syncProfile(req.user)
+    .then(() => res.json({ user: serializeUser(req.user), csrfToken: req.authSession.csrfToken }))
+    .catch((error) => {
+      console.error('Failed to sync user profile:', error);
+      res.status(500).json({ message: 'Unable to load your profile right now.' });
+    });
 });
 
 app.post('/api/auth/logout', requireAuth, requireTrustedOrigin, requireCsrf, async (req, res) => {
@@ -244,6 +252,7 @@ app.patch('/api/users/me', requireAuth, requireTrustedOrigin, requireCsrf, async
       runValidators: true,
     });
     if (!user) return res.status(401).json({ message: 'Please sign in to continue.' });
+    await syncProfile(user);
     if (updates.username || updates.avatarUrl !== undefined) {
       for (const room of roomManager.rooms.values()) {
         const participant = room.getParticipant(String(user._id));
@@ -1008,13 +1017,42 @@ async function startServer() {
     throw new Error('CLIENT_URL must contain the deployed frontend origin in production.');
   }
   const roomsCollection = await connectToMongo();
-  await Promise.all([User.init(), AuthSession.init()]);
+  await Promise.all([User.init(), AuthSession.init(), Profile.init()]);
+  await backfillProfiles();
   await roomManager.initialize(roomsCollection);
   console.log(`Loaded ${roomManager.rooms.size} saved room(s).`);
 
   server.listen(port, () => {
     console.log(`Watch party server running on port ${port}`);
   });
+}
+
+async function syncProfile(user) {
+  return Profile.findOneAndUpdate(
+    { userId: user._id },
+    { $set: { username: user.username, email: user.email } },
+    { upsert: true, new: true, runValidators: true, setDefaultsOnInsert: true },
+  );
+}
+
+async function backfillProfiles() {
+  let writes = [];
+  for await (const user of User.find().select('_id username email').lean().cursor()) {
+    writes.push({
+      updateOne: {
+        filter: { userId: user._id },
+        update: { $set: { username: user.username, email: user.email } },
+        upsert: true,
+      },
+    });
+    if (writes.length === 500) {
+      await Profile.bulkWrite(writes, { ordered: false });
+      writes = [];
+    }
+  }
+  if (writes.length > 0) {
+    await Profile.bulkWrite(writes, { ordered: false });
+  }
 }
 
 async function shutdown() {
